@@ -14,7 +14,8 @@ export type GridEntityKind =
   | 'pipe'
   | 'pipe-to-ground'
   | 'beacon'
-  | 'electric-pole';
+  | 'electric-pole'
+  | 'grid-obstacle';
 
 export interface GridEntity {
   entityNumber: number;
@@ -47,6 +48,8 @@ export interface GridEntity {
   inserterItems?: string[];
   /** Optional custom color override */
   accentColor?: string;
+  /** Marks entities that belong to an imported Base Grid Frame (locked structural obstacles/rails/poles) */
+  isGridFrame?: boolean;
 }
 
 export interface StageZone {
@@ -90,12 +93,27 @@ export interface LayoutPortMarker {
   side: 'south' | 'west' | 'north' | 'east';
 }
 
+export interface GridFitReport {
+  hasGridFrame: boolean;
+  interiorBounds: { minX: number; minY: number; maxX: number; maxY: number };
+  interiorWidth: number;
+  interiorHeight: number;
+  frameEntityCount: number;
+  requestedMachines: number;
+  placedMachines: number;
+  overflowMachines: number;
+  fitsInsideFrame: boolean;
+  interiorUtilizationPct: number;
+}
+
 export interface LayoutSynthesisOptions {
   compactionMode?: 'compact' | 'standard';
   includeBeacons?: boolean;
   includePowerPoles?: boolean;
   directInsertion?: boolean;
   inputSide?: InputAlignmentSide;
+  /** Optional external grid blueprint entities (rails, roboports, substations, walls, etc.) to fit production inside */
+  gridFrame?: GridEntity[];
 }
 
 export interface SynthesizedLayout {
@@ -110,4 +128,5 @@ export interface SynthesizedLayout {
   };
   stats: SpatialLayoutStats;
   compactionMode: 'compact' | 'standard';
+  gridFitReport?: GridFitReport;
 }

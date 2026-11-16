@@ -6,7 +6,13 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PACK_ID, packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
-import { decodeBlueprintString, encodeBlueprintString } from '../blueprintCodec.ts';
+import {
+  createSampleRailCityBlockString,
+  createSampleSubstationGridString,
+  decodeBlueprintString,
+  encodeBlueprintString,
+  parseBlueprintToEntities,
+} from '../blueprintCodec.ts';
 import { synthesizeFactoryLayout } from '../layoutSynthesizer.ts';
 
 describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', () => {
@@ -204,6 +210,55 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
           }
         }
       }
+    }
+  });
+
+  it('imports external Rail City Block & Substation grids and adapts production strictly inside without collisions', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 15 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+
+    for (const gridStr of [createSampleRailCityBlockString(), createSampleSubstationGridString()]) {
+      const parsedFrame = parseBlueprintToEntities(gridStr, index);
+      expect(parsedFrame.entities.length).toBeGreaterThan(10);
+
+      const layout = synthesizeFactoryLayout(index, solveResult, config, {
+        compactionMode: 'compact',
+        inputSide: 'south',
+        gridFrame: parsedFrame.entities,
+      });
+
+      expect(layout.gridFitReport).toBeDefined();
+      expect(layout.gridFitReport!.hasGridFrame).toBe(true);
+      expect(layout.gridFitReport!.placedMachines).toBeGreaterThan(0);
+
+      const ib = layout.gridFitReport!.interiorBounds;
+      const occupied = new Set<string>();
+      for (const e of layout.entities) {
+        if (!e.isGridFrame) {
+          expect(e.tileX).toBeGreaterThanOrEqual(ib.minX);
+          expect(e.tileX + e.width).toBeLessThanOrEqual(ib.maxX);
+          expect(e.tileY).toBeGreaterThanOrEqual(ib.minY);
+          expect(e.tileY + e.height).toBeLessThanOrEqual(ib.maxY);
+        }
+        for (let dx = 0; dx < e.width; dx++) {
+          for (let dy = 0; dy < e.height; dy++) {
+            const key = `${e.tileX + dx},${e.tileY + dy}`;
+            expect(occupied.has(key)).toBe(false);
+            occupied.add(key);
+          }
+        }
+      }
+
+      // Combined layout + imported frame re-encodes to valid Factorio 0eN string
+      const reEncoded = encodeBlueprintString(layout.entities, 'Grid Block Adapted');
+      expect(reEncoded.startsWith('0eN')).toBe(true);
+      const reDecoded = decodeBlueprintString(reEncoded);
+      expect(reDecoded.blueprint.entities.length).toBe(layout.entities.length);
     }
   });
 });

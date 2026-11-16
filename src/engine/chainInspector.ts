@@ -120,8 +120,8 @@ export function buildTargetChainTree(
     if (!res) return null;
 
     const isTarget = targetIds.has(itemId);
-    const recipe = !res.isRawResource ? pickRecipeForItem(index, itemId, config) : null;
-    const isNaturalRaw = res.isRawResource || !recipe;
+    const recipe = !res.isRawResource || isTarget ? pickRecipeForItem(index, itemId, config) : null;
+    const isNaturalRaw = (res.isRawResource && !isTarget) || !recipe;
     const isExternalOverride = !isNaturalRaw && !isTarget && rawOverrides.has(itemId);
     const isPrimaryMaterial =
       !isNaturalRaw &&

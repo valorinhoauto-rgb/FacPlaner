@@ -245,4 +245,40 @@ describe('Fase 3 — Factorio Production Calculation Engine', () => {
     expect(ironNode.children.length).toBe(0);
     expect(ironNode.hiddenSubstepsCount).toBeGreaterThanOrEqual(1);
   });
+
+  it('solves large-scale ore mining (4x belts iron ore), uranium mining (sulfuric acid), and bulk plastic/LDS', () => {
+    // 1. 4x Express Belts (180/s) Iron Ore extraction
+    const orePlan = solveProductionPlan(index, {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'iron-ore', ratePerSec: 180 }],
+      defaultBeltId: 'express-transport-belt',
+    });
+    const oreStage = orePlan.stages.find((s) => s.recipeId === 'mining-iron-ore')!;
+    expect(oreStage).toBeDefined();
+    expect(oreStage.machineId).toBe('electric-mining-drill');
+    // 1 drill = 0.5 ore/s -> 180/s needs 360 electric mining drills
+    expect(oreStage.installedMachines).toBe(360);
+    expect(orePlan.targetsSummary[0].actualPerSec).toBeCloseTo(180, 4);
+
+    // 2. Uranium ore extraction balances upstream sulfuric-acid chain!
+    const uraniumPlan = solveProductionPlan(index, {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'uranium-ore', ratePerSec: 20 }],
+      defaultBeltId: 'express-transport-belt',
+    });
+    expect(uraniumPlan.stages.some((s) => s.recipeId === 'mining-uranium-ore')).toBe(true);
+    expect(uraniumPlan.stages.some((s) => s.recipeId === 'sulfuric-acid')).toBe(true);
+    expect(uraniumPlan.rawInputs.some((r) => r.itemId === 'iron-ore')).toBe(true);
+    expect(uraniumPlan.rawInputs.some((r) => r.itemId === 'water')).toBe(true);
+
+    // 3. Large-scale Plastic Bar (180/s) + LDS (90/s)
+    const ldsPlan = solveProductionPlan(index, {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'low-density-structure', ratePerSec: 90 }],
+      defaultBeltId: 'express-transport-belt',
+    });
+    expect(ldsPlan.targetsSummary[0].actualPerSec).toBeCloseTo(90, 2);
+    expect(ldsPlan.stages.some((s) => s.recipeId === 'plastic-bar')).toBe(true);
+    expect(ldsPlan.stages.some((s) => s.recipeId === 'steel-plate')).toBe(true);
+  });
 });

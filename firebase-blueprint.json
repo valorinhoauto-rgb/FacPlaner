@@ -113,13 +113,19 @@
         },
         "layoutOptions": {
           "type": "object",
-          "description": "Opções compactas de layout (beacons, postes, inserção direta)."
+          "description": "Opções compactas de layout (beacons, postes, inserção direta, inputSide)."
         },
         "blueprintString": {
           "type": "string",
           "minLength": 0,
           "maxLength": 32000,
           "description": "String Factorio 0eN... comprimida em zlib, salva apenas se houver edição manual no canvas 2D."
+        },
+        "gridFrameString": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 32000,
+          "description": "String Factorio 0eN... comprimida em zlib representando a Grid Base importada (trilhos, roboports, paredes, subestações)."
         },
         "createdAt": {
           "type": "string",

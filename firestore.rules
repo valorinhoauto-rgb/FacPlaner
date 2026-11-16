@@ -50,10 +50,11 @@ service cloud.firestore {
 
     function isValidLayoutOptions(opts) {
       return opts is map
-        && opts.keys().hasOnly(['includeBeacons', 'includePowerPoles', 'directInsertion'])
+        && opts.keys().hasOnly(['includeBeacons', 'includePowerPoles', 'directInsertion', 'inputSide'])
         && (!('includeBeacons' in opts) || opts.includeBeacons is bool)
         && (!('includePowerPoles' in opts) || opts.includePowerPoles is bool)
-        && (!('directInsertion' in opts) || opts.directInsertion is bool);
+        && (!('directInsertion' in opts) || opts.directInsertion is bool)
+        && (!('inputSide' in opts) || opts.inputSide in ['distributed', 'south', 'west']);
     }
 
     function isValidSchematic(data, userId, schematicId) {
@@ -86,6 +87,7 @@ service cloud.firestore {
           'researchProductivityBonuses',
           'layoutOptions',
           'blueprintString',
+          'gridFrameString',
           'createdAt',
           'updatedAt'
         ])
@@ -129,6 +131,7 @@ service cloud.firestore {
         && (!('researchProductivityBonuses' in data) || (data.researchProductivityBonuses is map && data.researchProductivityBonuses.size() <= 40))
         && (!('layoutOptions' in data) || isValidLayoutOptions(data.layoutOptions))
         && (!('blueprintString' in data) || (data.blueprintString is string && data.blueprintString.size() <= 32000))
+        && (!('gridFrameString' in data) || (data.gridFrameString is string && data.gridFrameString.size() <= 32000))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -193,6 +196,7 @@ service cloud.firestore {
             'researchProductivityBonuses',
             'layoutOptions',
             'blueprintString',
+            'gridFrameString',
             'updatedAt'
           ]);
         allow delete: if isValidId(userId)

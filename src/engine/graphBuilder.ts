@@ -18,6 +18,15 @@ export interface DependencyGraph {
 }
 
 const DEFAULT_CANONICAL_RECIPES: Record<string, string> = {
+  'iron-ore': 'mining-iron-ore',
+  'copper-ore': 'mining-copper-ore',
+  coal: 'mining-coal',
+  stone: 'mining-stone',
+  'uranium-ore': 'mining-uranium-ore',
+  'crude-oil': 'extract-crude-oil',
+  water: 'pump-water',
+  'tungsten-ore': 'mining-tungsten-ore',
+  calcite: 'mining-calcite',
   'iron-plate': 'iron-plate',
   'copper-plate': 'copper-plate',
   'steel-plate': 'steel-plate',
@@ -35,6 +44,9 @@ const DEFAULT_CANONICAL_RECIPES: Record<string, string> = {
   'kr-oxygen': 'kr-oxygen',
   'kr-nitrogen': 'kr-nitrogen',
   'kr-hydrogen': 'kr-hydrogen-from-atmosphere',
+  'kr-rare-metal-ore': 'mining-kr-rare-metal-ore',
+  'kr-imersite': 'mining-kr-imersite',
+  'kr-mineral-water': 'extract-kr-mineral-water',
 };
 
 export function pickRecipeForItem(
@@ -93,10 +105,14 @@ export function pickMachineForRecipe(
     throw new Error(`No machine supports recipe category "${recipe.category}" for "${recipe.id}".`);
   }
 
-  // Reasonable industrial defaults: Electric Furnace for smelting, Assembling Machine 2 for crafting
+  // Reasonable industrial defaults: Electric Furnace for smelting, Assembling Machine 2 for crafting, Electric Mining Drill for mining
   if (recipe.category === 'smelting') {
     const electric = compatible.find((m) => m.id === 'electric-furnace');
     if (electric) return electric;
+  }
+  if (recipe.category === 'mining') {
+    const drill = compatible.find((m) => m.id === 'electric-mining-drill');
+    if (drill) return drill;
   }
   const tier2 = compatible.find((m) => m.id === 'assembling-machine-2');
   if (tier2) return tier2;
@@ -126,7 +142,7 @@ export function buildDependencyGraph(
     const resource = index.resourcesById.get(itemId);
     if (!resource) return;
 
-    if (resource.isRawResource || (rawOverrides.has(itemId) && !targetIds.has(itemId))) {
+    if ((resource.isRawResource && !targetIds.has(itemId)) || (rawOverrides.has(itemId) && !targetIds.has(itemId))) {
       rawItems.add(itemId);
       return;
     }

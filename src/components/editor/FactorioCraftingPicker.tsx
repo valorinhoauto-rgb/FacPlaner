@@ -83,6 +83,7 @@ export const FactorioCraftingPicker: React.FC<FactorioCraftingPickerProps> = ({
   const useFactorioMenu = hasVisualAssets && !preferListMode;
 
   const [query, setQuery] = useState('');
+  const [quickFilter, setQuickFilter] = useState<'all' | 'basics' | 'fluids' | 'intermediates'>('all');
   const catalog = useMemo(
     () => buildCraftableGroupCatalog(index, t.picker.groups),
     [index, t.picker.groups]
@@ -141,35 +142,77 @@ export const FactorioCraftingPicker: React.FC<FactorioCraftingPickerProps> = ({
 
   const normalizedQuery = query.trim().toLowerCase();
 
-  // Filter catalog groups & subgroups for live search alongside tabs
+  const matchesQuickFilter = (it: CatalogItem): boolean => {
+    if (quickFilter === 'all') return true;
+    if (quickFilter === 'fluids') {
+      return (
+        it.resource?.kind === 'fluid' ||
+        it.subgroupId.includes('fluid') ||
+        it.primaryRecipe.category === 'pumping' ||
+        it.id.includes('gas') ||
+        it.id.includes('oil') ||
+        it.id.includes('acid') ||
+        it.id.includes('water')
+      );
+    }
+    if (quickFilter === 'basics') {
+      return (
+        Boolean(it.resource?.isRawResource) ||
+        it.primaryRecipe.category === 'mining' ||
+        it.primaryRecipe.category === 'hard-mining' ||
+        it.primaryRecipe.category === 'smelting' ||
+        it.subgroupId === 'raw-resource' ||
+        it.subgroupId === 'raw-material' ||
+        it.id.includes('-plate') ||
+        it.id.includes('brick') ||
+        it.id.includes('plastic') ||
+        it.id.includes('sulfur') ||
+        it.id.includes('low-density-structure') ||
+        it.id.includes('ore')
+      );
+    }
+    return (
+      it.subgroupId === 'intermediate-product' ||
+      it.subgroupId === 'intermediate-recipe' ||
+      it.subgroupId === 'science-pack' ||
+      it.subgroupId === 'uranium-processing' ||
+      it.subgroupId.includes('intermediate') ||
+      it.subgroupId.includes('circuit') ||
+      it.resource?.category === 'intermediate-products'
+    );
+  };
+
+  // Filter catalog groups & subgroups for live search + quick filter alongside tabs
   const filteredCatalog = useMemo(() => {
-    if (!normalizedQuery) return catalog;
+    if (!normalizedQuery && quickFilter === 'all') return catalog;
     return catalog.map((g) => {
       const subgroups = g.subgroups
         .map((sg) => ({
           ...sg,
           items: sg.items.filter(
             (it) =>
-              it.name.toLowerCase().includes(normalizedQuery) ||
-              it.id.toLowerCase().includes(normalizedQuery) ||
-              it.modOrigin.toLowerCase().includes(normalizedQuery)
+              matchesQuickFilter(it) &&
+              (!normalizedQuery ||
+                it.name.toLowerCase().includes(normalizedQuery) ||
+                it.id.toLowerCase().includes(normalizedQuery) ||
+                it.modOrigin.toLowerCase().includes(normalizedQuery))
           ),
         }))
         .filter((sg) => sg.items.length > 0);
       const totalItems = subgroups.reduce((sum, sg) => sum + sg.items.length, 0);
       return { ...g, subgroups, totalItems };
     });
-  }, [catalog, normalizedQuery]);
+  }, [catalog, normalizedQuery, quickFilter]);
 
-  // Auto-switch tab when searching if current tab has 0 matches
+  // Auto-switch tab when searching/filtering if current tab has 0 matches
   useEffect(() => {
-    if (!normalizedQuery) return;
+    if (!normalizedQuery && quickFilter === 'all') return;
     const current = filteredCatalog.find((g) => g.id === activeGroupId);
     if (!current || current.totalItems === 0) {
       const firstMatch = filteredCatalog.find((g) => g.totalItems > 0);
       if (firstMatch) setActiveGroupId(firstMatch.id);
     }
-  }, [normalizedQuery, filteredCatalog, activeGroupId]);
+  }, [normalizedQuery, quickFilter, filteredCatalog, activeGroupId]);
 
   const activeGroup =
     filteredCatalog.find((g) => g.id === activeGroupId) ??
@@ -177,18 +220,17 @@ export const FactorioCraftingPicker: React.FC<FactorioCraftingPickerProps> = ({
     filteredCatalog[0];
 
   const flatFiltered = useMemo(() => {
-    if (!normalizedQuery) {
-      return [...flatItems].sort((a, b) => a.name.localeCompare(b.name));
-    }
     return flatItems
       .filter(
         (it) =>
-          it.name.toLowerCase().includes(normalizedQuery) ||
-          it.id.toLowerCase().includes(normalizedQuery) ||
-          it.modOrigin.toLowerCase().includes(normalizedQuery)
+          matchesQuickFilter(it) &&
+          (!normalizedQuery ||
+            it.name.toLowerCase().includes(normalizedQuery) ||
+            it.id.toLowerCase().includes(normalizedQuery) ||
+            it.modOrigin.toLowerCase().includes(normalizedQuery))
       )
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [flatItems, normalizedQuery]);
+  }, [flatItems, normalizedQuery, quickFilter]);
 
   const detailItem =
     hoveredItem ??
@@ -239,18 +281,43 @@ export const FactorioCraftingPicker: React.FC<FactorioCraftingPickerProps> = ({
           </div>
         </div>
 
-        <div className="p-2 border-b border-[#242C3A] relative">
-          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-4 top-1/2 -translate-y-1/2" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleSearchKeyDown}
-            placeholder={t.picker.searchListPlaceholder}
-            className="w-full pl-7 pr-2 py-1 text-xs bg-[#0C0F14] border border-[#252C37] rounded text-slate-100 focus:outline-none focus:border-amber-500"
-          />
+        <div className="p-2 border-b border-[#242C3A] space-y-2">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder={t.picker.searchListPlaceholder}
+              className="w-full pl-7 pr-2 py-1 text-xs bg-[#0C0F14] border border-[#252C37] rounded text-slate-100 focus:outline-none focus:border-amber-500"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {(
+              [
+                { id: 'all', label: t.picker.filterAll },
+                { id: 'basics', label: t.picker.filterBasics },
+                { id: 'fluids', label: t.picker.filterFluids },
+                { id: 'intermediates', label: t.picker.filterIntermediates },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setQuickFilter(f.id)}
+                className={`px-2 py-0.5 text-[10px] font-medium rounded border transition-colors ${
+                  quickFilter === f.id
+                    ? 'bg-amber-500/20 border-amber-500/60 text-amber-300'
+                    : 'bg-[#0C0F14] border-[#252C37] text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="max-h-72 overflow-y-auto divide-y divide-[#1D2430]">
@@ -389,11 +456,34 @@ export const FactorioCraftingPicker: React.FC<FactorioCraftingPickerProps> = ({
           })}
         </div>
         {activeGroup && (
-          <div className="mt-1.5 flex items-center justify-between text-[11px] text-[#cbbba0] px-0.5">
-            <span className="font-medium">{activeGroup.name}</span>
-            <span className="font-mono text-[#9ca3af] tabular-nums">
-              {activeGroup.totalItems} {t.picker.itemsCount}
-            </span>
+          <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-[#cbbba0] px-0.5">
+            <span className="font-medium truncate">{activeGroup.name}</span>
+            <div className="flex items-center gap-1 shrink-0">
+              {(
+                [
+                  { id: 'all', label: t.picker.filterAll },
+                  { id: 'basics', label: t.picker.filterBasics },
+                  { id: 'fluids', label: t.picker.filterFluids },
+                  { id: 'intermediates', label: t.picker.filterIntermediates },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setQuickFilter(f.id)}
+                  className={`px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+                    quickFilter === f.id
+                      ? 'bg-[#c87a1f]/35 border-[#eea84c] text-[#ffe6c0]'
+                      : 'bg-[#202226] border-[#141517] text-[#9ca3af] hover:text-[#e5dfd3]'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+              <span className="font-mono text-[#9ca3af] tabular-nums ml-1">
+                {activeGroup.totalItems} {t.picker.itemsCount}
+              </span>
+            </div>
           </div>
         )}
       </div>

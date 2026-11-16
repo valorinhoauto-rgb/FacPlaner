@@ -78,4 +78,30 @@ describe('Cloud Schematics Compact Serialization', () => {
   it('normalizes invalid characters from schematic IDs cleanly', () => {
     expect(normalizeSchematicId('proj 123/abc!@#')).toBe('proj_123_abc___');
   });
+
+  it('compresses imported gridFrame into gridFrameString and preserves layoutOptions.inputSide', async () => {
+    const { createSampleSubstationGridString, parseBlueprintToEntities } = await import(
+      '../../spatial/blueprintCodec.ts'
+    );
+    const project = createProjectFromTemplate(PROJECT_TEMPLATES[0]);
+    const index = packRegistry.getIndex(project.config.packId);
+    const parsedFrame = parseBlueprintToEntities(createSampleSubstationGridString(), index);
+
+    project.gridFrame = parsedFrame.entities.map((e) => ({ ...e, isGridFrame: true }));
+    project.layoutOptions = { inputSide: 'west', includePowerPoles: true };
+
+    const payload = buildCompactSchematicPayload(project, 'user_123');
+    expect(payload.gridFrameString).toBeDefined();
+    expect(payload.gridFrameString!.startsWith('0eN')).toBe(true);
+    expect(payload.layoutOptions?.inputSide).toBe('west');
+
+    const restored = hydrateFactoryProject({
+      ...payload,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    });
+    expect(restored.layoutOptions?.inputSide).toBe('west');
+    expect(restored.gridFrame?.length).toBe(parsedFrame.entities.length);
+    expect(restored.gridFrame?.every((e) => e.isGridFrame === true)).toBe(true);
+  });
 });

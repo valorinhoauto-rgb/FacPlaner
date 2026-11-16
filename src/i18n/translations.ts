@@ -106,6 +106,8 @@ export interface Translations {
     emptyDescription: string;
     emptyChooseButton: string;
     emptyDrawManualButton: string;
+    beltScalePresetsTooltip: string;
+    fluidScalePresetsTooltip: string;
   };
   chain: {
     title: string;
@@ -148,6 +150,10 @@ export interface Translations {
     extractionZeroInputs: string;
     recipesCount: string;
     hoverTip: string;
+    filterAll: string;
+    filterBasics: string;
+    filterFluids: string;
+    filterIntermediates: string;
     groups: Record<string, string>;
   };
   techModal: {
@@ -303,6 +309,16 @@ export interface Translations {
     invalidBlueprintError: string;
     cancel: string;
     decodeAndLoad: string;
+    gridFrameBadge: string;
+    gridFrameFits: string;
+    gridFramePartial: string;
+    clearGridFrame: string;
+    importModeGridFrame: string;
+    importModeGridFrameDesc: string;
+    importModeReplace: string;
+    importModeReplaceDesc: string;
+    sampleRailGridBtn: string;
+    sampleSubstationGridBtn: string;
   };
   database: {
     title: string;
@@ -575,6 +591,26 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
           name: 'Kovarex Enrichment Loop · 6/min',
           description: 'Ciclo de catalisador U-235 com Centrífugas e módulos de Produtividade 3.',
         },
+        {
+          name: 'Iron Plate · 4 Esteiras Azuis (180/s)',
+          description:
+            'Fundição em larga escala com Fornalhas Elétricas alimentadas por 4 esteiras completas de minério.',
+        },
+        {
+          name: 'Plástico em Larga Escala · 4 Esteiras (180/s)',
+          description:
+            'Complexo químico com Refinamento Avançado, Cracking Pesado/Leve, Água e Carvão balanceados.',
+        },
+        {
+          name: 'Low Density Structure · 2 Esteiras (90/s)',
+          description:
+            'Produção massiva de Estruturas de Baixa Densidade balanceando Plástico, Cobre e Aço desde os minérios.',
+        },
+        {
+          name: 'Gás de Petróleo & Urânio · Larga Escala',
+          description:
+            'Extração balanceada de Gás de Petróleo (15.000/min) e Minério de Urânio (45/s) com Ácido Sulfúrico.',
+        },
       ],
     },
     editor: {
@@ -601,6 +637,8 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Escolha o item ou fluido que você deseja produzir para gerar automaticamente a cadeia de máquinas, esteiras e insertores — ou desenhe direto na grade.',
       emptyChooseButton: 'Escolher Produto para Montar',
       emptyDrawManualButton: 'Desenhar manualmente',
+      beltScalePresetsTooltip: 'Multiplicador de esteiras cheias (larga escala)',
+      fluidScalePresetsTooltip: 'Vazão rápida em larga escala (/min)',
     },
     chain: {
       title: 'Escopo da Cadeia & Recursos Primários',
@@ -645,6 +683,10 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       extractionZeroInputs: 'Extração / Atmosférico (0 entradas)',
       recipesCount: 'receitas',
       hoverTip: 'Passe o mouse sobre um ícone para ver receita e origem.',
+      filterAll: 'Todos',
+      filterBasics: 'Minérios & Básicos',
+      filterFluids: 'Gases & Fluidos',
+      filterIntermediates: 'Intermediários',
       groups: {
         logistics: 'Logística',
         production: 'Produção',
@@ -818,6 +860,18 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       invalidBlueprintError: 'String 0eN... inválida.',
       cancel: 'Cancelar',
       decodeAndLoad: 'Decodificar e Carregar na Grade',
+      gridFrameBadge: 'Grid Base',
+      gridFrameFits: 'Cabe 100%',
+      gridFramePartial: 'Parcial',
+      clearGridFrame: 'Limpar Grid',
+      importModeGridFrame: 'Usar como Grid Base (Adaptar Produção Dentro)',
+      importModeGridFrameDesc:
+        'Mantém trilhos, paredes, roboports e subestações da sua blueprint e encaixa automaticamente a fábrica no espaço interno.',
+      importModeReplace: 'Substituir Planta (Modo Livre)',
+      importModeReplaceDesc:
+        'Carrega as entidades diretamente na grade 2D para inspeção e edição manual sem sintetizador.',
+      sampleRailGridBtn: 'Exemplo: City Block 48×48 (Trilhos + Roboport)',
+      sampleSubstationGridBtn: 'Exemplo: Grid Subestações 36×36',
     },
     database: {
       title: 'Banco de Dados, Mods & Assets do Factorio',
@@ -1253,6 +1307,26 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
           name: 'Kovarex Enrichment Loop · 6/min',
           description: 'U-235 catalyst cycle with Centrifuges and Productivity Module 3s.',
         },
+        {
+          name: 'Iron Plate · 4 Blue Belts (180/s)',
+          description:
+            'Large-scale smelting array with Electric Furnaces balanced across 4 full ore belts.',
+        },
+        {
+          name: 'Large-Scale Plastic · 4 Belts (180/s)',
+          description:
+            'Chemical complex balancing Advanced Oil Processing, Heavy/Light Cracking, Water, and Coal.',
+        },
+        {
+          name: 'Low Density Structure · 2 Belts (90/s)',
+          description:
+            'Massive LDS manufacturing balancing Plastic, Copper, and Steel directly from raw ores.',
+        },
+        {
+          name: 'Petroleum Gas & Uranium · Large-Scale',
+          description:
+            'Balanced extraction for Petroleum Gas (15,000/min) and Uranium Ore (45/s) with Sulfuric Acid.',
+        },
       ],
     },
     editor: {
@@ -1279,6 +1353,8 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Pick the item or fluid you want to manufacture to automatically synthesize machines, belts, and inserters — or draw directly on the grid.',
       emptyChooseButton: 'Choose Product to Build',
       emptyDrawManualButton: 'Draw manually',
+      beltScalePresetsTooltip: 'Full belt multiplier (large-scale production)',
+      fluidScalePresetsTooltip: 'Quick large-scale fluid flow rate (/min)',
     },
     chain: {
       title: 'Production Chain & Primary Resources',
@@ -1323,6 +1399,10 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       extractionZeroInputs: 'Extraction / Atmospheric (0 inputs)',
       recipesCount: 'recipes',
       hoverTip: 'Hover over an icon to inspect recipe and mod origin.',
+      filterAll: 'All',
+      filterBasics: 'Ores & Basics',
+      filterFluids: 'Gases & Fluids',
+      filterIntermediates: 'Intermediates',
       groups: {
         logistics: 'Logistics',
         production: 'Production',
@@ -1495,6 +1575,18 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       invalidBlueprintError: 'Invalid 0eN... blueprint string.',
       cancel: 'Cancel',
       decodeAndLoad: 'Decode and Load onto Grid',
+      gridFrameBadge: 'Grid Frame',
+      gridFrameFits: '100% Fits',
+      gridFramePartial: 'Partial',
+      clearGridFrame: 'Clear Grid',
+      importModeGridFrame: 'Use as Grid Frame (Adapt Production Inside)',
+      importModeGridFrameDesc:
+        'Preserves rails, walls, roboports, and substations from your blueprint and automatically fits the factory inside.',
+      importModeReplace: 'Replace Layout (Free Mode)',
+      importModeReplaceDesc:
+        'Loads blueprint entities directly onto the 2D canvas for manual inspection and editing.',
+      sampleRailGridBtn: 'Sample: 48×48 Rail City Block',
+      sampleSubstationGridBtn: 'Sample: 36×36 Substation Grid',
     },
     database: {
       title: 'Factorio Database, Mods & Assets',

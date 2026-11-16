@@ -200,19 +200,93 @@ function inferEntityKindAndSize(
   if (name === 'pipe' || name.includes('-pipe')) {
     return { kind: 'pipe', width: 1, height: 1 };
   }
-  if (name.includes('substation')) {
+
+  // Power distribution (kept as electric-pole so power wires render cleanly)
+  if (name.includes('substation') || name.includes('big-electric-pole')) {
     return { kind: 'electric-pole', width: 2, height: 2 };
   }
   if (name.includes('electric-pole')) {
     return { kind: 'electric-pole', width: 1, height: 1 };
   }
-  if (name.includes('assembling') || name.includes('furnace') || name.includes('refinery') || name.includes('chemical-plant') || name.includes('foundry') || name.includes('electromagnetic-plant') || name.includes('cryogenic-plant') || name.includes('crusher') || name.includes('filtration') || name.includes('electrolysis') || name.includes('condenser')) {
+
+  // Structural / Rail / Logistics / Defense Grid Entities
+  if (name.includes('rail-ramp')) {
+    return { kind: 'grid-obstacle', width: 4, height: 8 };
+  }
+  if (name.includes('curved-rail') || name.includes('elevated-curved-rail')) {
+    return { kind: 'grid-obstacle', width: 4, height: 4 };
+  }
+  if (
+    name.includes('straight-rail') ||
+    name.includes('half-diagonal-rail') ||
+    name.includes('elevated-straight-rail')
+  ) {
+    return { kind: 'grid-obstacle', width: 2, height: 2 };
+  }
+  if (
+    name.includes('rail-signal') ||
+    name.includes('rail-chain-signal') ||
+    name.includes('stone-wall') ||
+    name === 'gate' ||
+    name.includes('-gate') ||
+    name.includes('small-lamp') ||
+    name.includes('combinator') ||
+    name.includes('chest')
+  ) {
+    return { kind: 'grid-obstacle', width: 1, height: 1 };
+  }
+  if (name.includes('roboport')) {
+    return { kind: 'grid-obstacle', width: 4, height: 4 };
+  }
+  if (name.includes('cargo-landing-pad')) {
+    return { kind: 'grid-obstacle', width: 8, height: 8 };
+  }
+  if (
+    name.includes('radar') ||
+    name.includes('storage-tank') ||
+    name.includes('solar-panel') ||
+    name.includes('artillery-turret')
+  ) {
+    return { kind: 'grid-obstacle', width: 3, height: 3 };
+  }
+  if (
+    name.includes('train-stop') ||
+    name.includes('accumulator') ||
+    name.includes('turret')
+  ) {
+    return { kind: 'grid-obstacle', width: 2, height: 2 };
+  }
+
+  // Extraction & Production entities not directly in current pack index
+  if (name.includes('big-mining-drill')) {
+    return { kind: 'machine', width: 5, height: 5 };
+  }
+  if (name.includes('mining-drill') || name.includes('pumpjack')) {
+    return { kind: 'machine', width: 3, height: 3 };
+  }
+  if (name.includes('offshore-pump')) {
+    const horiz = direction === 4 || direction === 12;
+    return { kind: 'machine', width: horiz ? 2 : 1, height: horiz ? 1 : 2 };
+  }
+  if (
+    name.includes('assembling') ||
+    name.includes('furnace') ||
+    name.includes('refinery') ||
+    name.includes('chemical-plant') ||
+    name.includes('foundry') ||
+    name.includes('electromagnetic-plant') ||
+    name.includes('cryogenic-plant') ||
+    name.includes('crusher') ||
+    name.includes('filtration') ||
+    name.includes('electrolysis') ||
+    name.includes('condenser')
+  ) {
     const is5x5 = name.includes('refinery') || name.includes('foundry') || name.includes('cryogenic');
     const is4x4 = name.includes('electromagnetic');
     const s = is5x5 ? 5 : is4x4 ? 4 : 3;
     return { kind: 'machine', width: s, height: s };
   }
-  return { kind: 'machine', width: 1, height: 1 };
+  return { kind: 'grid-obstacle', width: 1, height: 1 };
 }
 
 /**
@@ -287,4 +361,197 @@ export function parseBlueprintToEntities(
     description: bp.description,
     entities: converted,
   };
+}
+
+/**
+ * Generates a realistic 48×48 Factorio Rail City Block blueprint string (`0eN...`)
+ * with outer straight-rail perimeter, stone-wall corners, corner substations, and a central roboport.
+ */
+export function createSampleRailCityBlockString(): string {
+  const entities: GridEntity[] = [];
+  let num = 1;
+  const size = 48;
+
+  // Top & bottom straight-rail corridors (2×2 segments)
+  for (let x = 2; x <= size - 4; x += 2) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'straight-rail',
+      tileX: x,
+      tileY: -size,
+      width: 2,
+      height: 2,
+      direction: 4,
+    });
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'straight-rail',
+      tileX: x,
+      tileY: -2,
+      width: 2,
+      height: 2,
+      direction: 4,
+    });
+  }
+
+  // Left & right straight-rail corridors (2×2 segments)
+  for (let y = -size + 2; y <= -4; y += 2) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'straight-rail',
+      tileX: 0,
+      tileY: y,
+      width: 2,
+      height: 2,
+      direction: 0,
+    });
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'straight-rail',
+      tileX: size - 2,
+      tileY: y,
+      width: 2,
+      height: 2,
+      direction: 0,
+    });
+  }
+
+  // Corner rail signals + walls
+  const signalSpots = [
+    { x: 2, y: -size + 2 },
+    { x: size - 3, y: -size + 2 },
+    { x: 2, y: -3 },
+    { x: size - 3, y: -3 },
+  ];
+  for (const s of signalSpots) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'rail-signal',
+      tileX: s.x,
+      tileY: s.y,
+      width: 1,
+      height: 1,
+      direction: 0,
+    });
+  }
+
+  // Interior corner substations (2×2)
+  const subSpots = [
+    { x: 4, y: -size + 4 },
+    { x: size - 6, y: -size + 4 },
+    { x: 4, y: -6 },
+    { x: size - 6, y: -6 },
+  ];
+  for (const s of subSpots) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'electric-pole',
+      name: 'substation',
+      tileX: s.x,
+      tileY: s.y,
+      width: 2,
+      height: 2,
+      direction: 0,
+    });
+  }
+
+  // Central Roboport (4×4) right in the middle of the block
+  entities.push({
+    entityNumber: num++,
+    kind: 'grid-obstacle',
+    name: 'roboport',
+    tileX: Math.floor(size / 2) - 2,
+    tileY: -Math.floor(size / 2) - 2,
+    width: 4,
+    height: 4,
+    direction: 0,
+  });
+
+  return encodeBlueprintString(
+    entities,
+    'City Block 48×48 (Trilhos + Roboport)',
+    'Exemplo de grid ferroviária 48×48 para testar adaptação automática de produção.'
+  );
+}
+
+/**
+ * Generates a compact 36×36 Factorio Substation + Wall grid blueprint string (`0eN...`).
+ */
+export function createSampleSubstationGridString(): string {
+  const entities: GridEntity[] = [];
+  let num = 1;
+  const size = 36;
+
+  // Perimeter stone-wall border
+  for (let x = 0; x < size; x++) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'stone-wall',
+      tileX: x,
+      tileY: -size,
+      width: 1,
+      height: 1,
+      direction: 0,
+    });
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'stone-wall',
+      tileX: x,
+      tileY: -1,
+      width: 1,
+      height: 1,
+      direction: 0,
+    });
+  }
+  for (let y = -size + 1; y < -1; y++) {
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'stone-wall',
+      tileX: 0,
+      tileY: y,
+      width: 1,
+      height: 1,
+      direction: 0,
+    });
+    entities.push({
+      entityNumber: num++,
+      kind: 'grid-obstacle',
+      name: 'stone-wall',
+      tileX: size - 1,
+      tileY: y,
+      width: 1,
+      height: 1,
+      direction: 0,
+    });
+  }
+
+  // 2×2 substations spaced every 16 tiles inside
+  for (const sx of [3, 18, 31]) {
+    for (const sy of [-size + 3, -19, -5]) {
+      entities.push({
+        entityNumber: num++,
+        kind: 'electric-pole',
+        name: 'substation',
+        tileX: sx,
+        tileY: sy,
+        width: 2,
+        height: 2,
+        direction: 0,
+      });
+    }
+  }
+
+  return encodeBlueprintString(
+    entities,
+    'Grid de Subestações 36×36',
+    'Grid compacta murada com subestações distribuídas para blocos modulares.'
+  );
 }

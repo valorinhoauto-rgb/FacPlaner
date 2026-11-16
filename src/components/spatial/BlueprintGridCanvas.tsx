@@ -32,6 +32,8 @@ import type {
 } from '../../spatial/types.ts';
 import {
   buildBlueprintJson,
+  createSampleRailCityBlockString,
+  createSampleSubstationGridString,
   encodeBlueprintString,
   parseBlueprintToEntities,
 } from '../../spatial/blueprintCodec.ts';
@@ -58,9 +60,12 @@ interface BlueprintGridCanvasProps {
   defaultBeltId: string;
   compactionMode: 'compact' | 'standard';
   layoutOptions?: LayoutSynthesisOptions;
+  hasGridFrame?: boolean;
   selectedStageId: string | null;
   onSelectStage: (stageId: string | null) => void;
   onChangeEntities: (next: GridEntity[]) => void;
+  onImportGridFrame?: (frameEntities: GridEntity[]) => void;
+  onClearGridFrame?: () => void;
   onResetAutoLayout: () => void;
   onToggleCompaction: (mode: 'compact' | 'standard') => void;
   onChangeLayoutOptions?: (patch: Partial<LayoutSynthesisOptions>) => void;
@@ -95,9 +100,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   defaultBeltId,
   compactionMode,
   layoutOptions,
+  hasGridFrame,
   selectedStageId,
   onSelectStage,
   onChangeEntities,
+  onImportGridFrame,
+  onClearGridFrame,
   onResetAutoLayout,
   onToggleCompaction,
   onChangeLayoutOptions,
@@ -121,6 +129,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [showRawJson, setShowRawJson] = useState(false);
 
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [importMode, setImportMode] = useState<'grid-frame' | 'replace'>('grid-frame');
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
 
@@ -221,7 +230,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   }, [selectedEntity, entities, onChangeEntities]);
 
   const handleDeleteSelected = useCallback(() => {
-    if (!selectedEntity) return;
+    if (!selectedEntity || selectedEntity.isGridFrame) return;
     onChangeEntities(entities.filter((e) => e.entityNumber !== selectedEntity.entityNumber));
     setSelectedEntityNum(null);
   }, [selectedEntity, entities, onChangeEntities]);
@@ -265,7 +274,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
     if (tool === 'erase') {
       const hit = findEntityAtTile(tile.x, tile.y);
-      if (hit) {
+      if (hit && !hit.isGridFrame) {
         onChangeEntities(entities.filter((x) => x.entityNumber !== hit.entityNumber));
         if (selectedEntityNum === hit.entityNumber) setSelectedEntityNum(null);
       }
@@ -331,21 +340,31 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       return;
     }
 
-    // Select or start moving entity
+    // Select or start moving entity (Base Grid Frame entities stay locked in place)
     const hit = findEntityAtTile(tile.x, tile.y);
     if (hit) {
       setSelectedEntityNum(hit.entityNumber);
       if (hit.stageId) onSelectStage(hit.stageId);
-      dragStateRef.current = {
-        mode: 'move-entity',
-        startScreenX: e.clientX,
-        startScreenY: e.clientY,
-        startPanX: pan.x,
-        startPanY: pan.y,
-        entityNum: hit.entityNumber,
-        origTileX: hit.tileX,
-        origTileY: hit.tileY,
-      };
+      if (!hit.isGridFrame) {
+        dragStateRef.current = {
+          mode: 'move-entity',
+          startScreenX: e.clientX,
+          startScreenY: e.clientY,
+          startPanX: pan.x,
+          startPanY: pan.y,
+          entityNum: hit.entityNumber,
+          origTileX: hit.tileX,
+          origTileY: hit.tileY,
+        };
+      } else {
+        dragStateRef.current = {
+          mode: 'pan',
+          startScreenX: e.clientX,
+          startScreenY: e.clientY,
+          startPanX: pan.x,
+          startPanY: pan.y,
+        };
+      }
     } else {
       setSelectedEntityNum(null);
       dragStateRef.current = {
@@ -469,6 +488,25 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           ctx.lineTo(width, sy);
           ctx.stroke();
         }
+      }
+
+      // Draw Imported Base Grid Interior Boundary when active
+      if (layout.gridFitReport?.hasGridFrame) {
+        const ib = layout.gridFitReport.interiorBounds;
+        const ix = pan.x + ib.minX * zoom;
+        const iy = pan.y + ib.minY * zoom;
+        const iw = (ib.maxX - ib.minX) * zoom;
+        const ih = (ib.maxY - ib.minY) * zoom;
+        ctx.save();
+        ctx.fillStyle = 'rgba(34, 211, 238, 0.025)';
+        ctx.fillRect(ix, iy, iw, ih);
+        ctx.strokeStyle = layout.gridFitReport.fitsInsideFrame
+          ? 'rgba(34, 211, 238, 0.48)'
+          : 'rgba(245, 158, 11, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(ix, iy, iw, ih);
+        ctx.restore();
       }
 
       // Draw Stage Zones
@@ -851,6 +889,67 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               ctx.fillRect(x + 5 + idx * (s + 2), y + h - s - 5, s, s);
             });
           }
+        } else if (ent.kind === 'grid-obstacle') {
+          const obsImg = spritePackStore.resolveImage(ent.name);
+          if (obsImg) {
+            ctx.drawImage(obsImg, x + 1, y + 1, w - 2, h - 2);
+          } else if (ent.name.includes('rail')) {
+            // Rail ties + twin steel rails
+            ctx.fillStyle = '#1E1B18';
+            ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+            const horiz = ent.direction === 4 || ent.direction === 12;
+            ctx.fillStyle = '#574232';
+            if (horiz) {
+              for (let tx = 0.15; tx < 0.9; tx += 0.28) {
+                ctx.fillRect(x + w * tx, y + h * 0.12, Math.max(2, w * 0.12), h * 0.76);
+              }
+              ctx.fillStyle = '#94A3B8';
+              ctx.fillRect(x, y + h * 0.24, w, Math.max(1.5, h * 0.09));
+              ctx.fillRect(x, y + h * 0.67, w, Math.max(1.5, h * 0.09));
+            } else {
+              for (let ty = 0.15; ty < 0.9; ty += 0.28) {
+                ctx.fillRect(x + w * 0.12, y + h * ty, w * 0.76, Math.max(2, h * 0.12));
+              }
+              ctx.fillStyle = '#94A3B8';
+              ctx.fillRect(x + w * 0.24, y, Math.max(1.5, w * 0.09), h);
+              ctx.fillRect(x + w * 0.67, y, Math.max(1.5, w * 0.09), h);
+            }
+          } else if (ent.name.includes('roboport')) {
+            ctx.fillStyle = '#29221A';
+            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 1.6;
+            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.fillStyle = '#B45309';
+            ctx.fillRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
+            ctx.fillStyle = '#34D399';
+            ctx.fillRect(x + w * 0.25, y + h * 0.25, w * 0.14, h * 0.14);
+            ctx.fillRect(x + w * 0.61, y + h * 0.25, w * 0.14, h * 0.14);
+          } else if (ent.name.includes('wall') || ent.name.includes('gate')) {
+            ctx.fillStyle = ent.name.includes('gate') ? '#854D0E' : '#475569';
+            ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+            ctx.strokeStyle = ent.name.includes('gate') ? '#FACC15' : '#94A3B8';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+          } else if (ent.name.includes('solar-panel')) {
+            ctx.fillStyle = '#0F2544';
+            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.strokeStyle = '#38BDF8';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+          } else if (ent.name.includes('train-stop')) {
+            ctx.fillStyle = '#451A1A';
+            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.strokeStyle = '#EF4444';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+          } else {
+            ctx.fillStyle = '#262932';
+            ctx.fillRect(x + 1.5, y + 1.5, w - 3, h - 3);
+            ctx.strokeStyle = '#64748B';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+          }
         }
 
         if (isSelected) {
@@ -1167,7 +1266,13 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         setImportError(t.canvas.emptyBlueprintError);
         return;
       }
-      onChangeEntities(parsed.entities);
+
+      if (importMode === 'grid-frame' && onImportGridFrame) {
+        onImportGridFrame(parsed.entities);
+      } else {
+        onChangeEntities(parsed.entities);
+      }
+
       setImportModalOpen(false);
       setImportText('');
       setSelectedEntityNum(null);
@@ -1347,10 +1452,37 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             {t.canvas.autoLayout}
           </button>
 
+          {hasGridFrame && layout.gridFitReport && (
+            <div className="inline-flex items-center">
+              <span
+                className={`px-2 py-1.5 text-xs font-mono rounded-l border whitespace-nowrap ${
+                  layout.gridFitReport.fitsInsideFrame
+                    ? 'bg-emerald-950/50 border-emerald-500/60 text-emerald-300'
+                    : 'bg-amber-950/50 border-amber-500/60 text-amber-300'
+                }`}
+              >
+                {t.canvas.gridFrameBadge} {layout.gridFitReport.interiorWidth}×{layout.gridFitReport.interiorHeight} ·{' '}
+                {layout.gridFitReport.fitsInsideFrame
+                  ? t.canvas.gridFrameFits
+                  : `${t.canvas.gridFramePartial} ${layout.gridFitReport.placedMachines}/${layout.gridFitReport.requestedMachines}`}
+              </span>
+              {onClearGridFrame && (
+                <button
+                  type="button"
+                  onClick={onClearGridFrame}
+                  className="px-2 py-1.5 text-xs font-medium text-red-300 bg-[#1A2029] border border-l-0 border-[#28313E] rounded-r hover:bg-red-950/40 whitespace-nowrap"
+                >
+                  × {t.canvas.clearGridFrame}
+                </button>
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => {
               setImportError(null);
+              setImportMode(onImportGridFrame ? 'grid-frame' : 'replace');
               setImportModalOpen(true);
             }}
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37] whitespace-nowrap"
@@ -1574,10 +1706,68 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             </div>
 
             <div className="p-5 space-y-4">
+              {onImportGridFrame && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('grid-frame')}
+                    className={`text-left p-3 rounded border transition-colors ${
+                      importMode === 'grid-frame'
+                        ? 'bg-cyan-950/35 border-cyan-500/70 text-cyan-100'
+                        : 'bg-[#0C0F14] border-[#252C37] text-slate-300 hover:border-slate-500'
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{t.canvas.importModeGridFrame}</div>
+                    <div className="text-[11px] text-slate-400 mt-1 leading-snug">
+                      {t.canvas.importModeGridFrameDesc}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('replace')}
+                    className={`text-left p-3 rounded border transition-colors ${
+                      importMode === 'replace'
+                        ? 'bg-amber-500/15 border-amber-500/70 text-amber-100'
+                        : 'bg-[#0C0F14] border-[#252C37] text-slate-300 hover:border-slate-500'
+                    }`}
+                  >
+                    <div className="text-xs font-semibold">{t.canvas.importModeReplace}</div>
+                    <div className="text-[11px] text-slate-400 mt-1 leading-snug">
+                      {t.canvas.importModeReplaceDesc}
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportError(null);
+                    setImportMode('grid-frame');
+                    setImportText(createSampleRailCityBlockString());
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-medium text-cyan-200 bg-[#11202B] border border-cyan-500/40 rounded hover:border-cyan-400"
+                >
+                  {t.canvas.sampleRailGridBtn}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportError(null);
+                    setImportMode('grid-frame');
+                    setImportText(createSampleSubstationGridString());
+                  }}
+                  className="px-2.5 py-1 text-[11px] font-medium text-cyan-200 bg-[#11202B] border border-cyan-500/40 rounded hover:border-cyan-400"
+                >
+                  {t.canvas.sampleSubstationGridBtn}
+                </button>
+              </div>
+
               <textarea
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
-                rows={8}
+                rows={7}
                 placeholder="0eNqrVkrKKU0tKMrMK1ayqlbK..."
                 className="w-full p-3 bg-[#0C0F14] border border-[#252C37] rounded text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500"
               />

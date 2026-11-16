@@ -67,9 +67,18 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
         {
           compactionMode: project.compactionMode,
           ...project.layoutOptions,
+          gridFrame: project.gridFrame,
         }
       ),
-    [index, solveResult, project.config, packId, project.compactionMode, project.layoutOptions]
+    [
+      index,
+      solveResult,
+      project.config,
+      packId,
+      project.compactionMode,
+      project.layoutOptions,
+      project.gridFrame,
+    ]
   );
 
   const activeEntities = project.customEntities ?? autoLayout.entities;
@@ -86,6 +95,10 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   const primaryTarget = project.config.targets[0];
   const primaryRes = primaryTarget ? index.resourcesById.get(primaryTarget.itemId) : undefined;
   const displayUnitMult = RATE_UNIT_MULTIPLIER[project.rateUnit];
+  const activeBelt =
+    index.beltsById.get(project.config.defaultBeltId ?? 'express-transport-belt') ??
+    index.pack.belts[index.pack.belts.length - 1];
+  const beltSpeedPerSec = activeBelt?.throughputPerSec ?? 45;
 
   return (
     <div className="flex flex-col h-[calc(100vh-57px)] overflow-hidden">
@@ -157,40 +170,115 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
             )}
           </div>
 
-          {/* Target Rate & Unit */}
+          {/* Target Rate, Unit & Large-Scale Belt / Fluid Presets */}
           {primaryTarget && (
-            <div className="flex items-center">
-              <input
-                type="number"
-                min={0.01}
-                step={project.rateUnit === 'per_second' ? 0.5 : 5}
-                value={Number((primaryTarget.ratePerSec * displayUnitMult).toFixed(3))}
-                onChange={(e) => {
-                  const val = Math.max(0.001, Number(e.target.value) || 0.001);
-                  updateConfig((prev) => ({
-                    ...prev,
-                    targets: [
-                      { ...prev.targets[0], ratePerSec: val / displayUnitMult },
-                      ...prev.targets.slice(1),
-                    ],
-                  }));
-                }}
-                className="w-20 px-2.5 py-1.5 text-xs font-mono tabular-nums text-right bg-[#0C0F14] border border-[#262F3D] rounded-l text-amber-400 font-semibold focus:outline-none focus:border-amber-500"
-              />
-              <select
-                value={project.rateUnit}
-                onChange={(e) =>
-                  onUpdateProject((prev) => ({
-                    ...prev,
-                    rateUnit: e.target.value as RateUnit,
-                  }))
-                }
-                className="px-2 py-1.5 text-xs bg-[#181E27] border border-l-0 border-[#262F3D] rounded-r text-slate-200 focus:outline-none"
-              >
-                <option value="per_second">{t.editor.unitPerSecond}</option>
-                <option value="per_minute">{t.editor.unitPerMinute}</option>
-                <option value="per_hour">{t.editor.unitPerHour}</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex items-center">
+                <input
+                  type="number"
+                  min={0.01}
+                  step={project.rateUnit === 'per_second' ? 0.5 : 5}
+                  value={Number((primaryTarget.ratePerSec * displayUnitMult).toFixed(3))}
+                  onChange={(e) => {
+                    const val = Math.max(0.001, Number(e.target.value) || 0.001);
+                    updateConfig((prev) => ({
+                      ...prev,
+                      targets: [
+                        { ...prev.targets[0], ratePerSec: val / displayUnitMult },
+                        ...prev.targets.slice(1),
+                      ],
+                    }));
+                  }}
+                  className="w-20 px-2.5 py-1.5 text-xs font-mono tabular-nums text-right bg-[#0C0F14] border border-[#262F3D] rounded-l text-amber-400 font-semibold focus:outline-none focus:border-amber-500"
+                />
+                <select
+                  value={project.rateUnit}
+                  onChange={(e) =>
+                    onUpdateProject((prev) => ({
+                      ...prev,
+                      rateUnit: e.target.value as RateUnit,
+                    }))
+                  }
+                  className="px-2 py-1.5 text-xs bg-[#181E27] border border-l-0 border-[#262F3D] rounded-r text-slate-200 focus:outline-none"
+                >
+                  <option value="per_second">{t.editor.unitPerSecond}</option>
+                  <option value="per_minute">{t.editor.unitPerMinute}</option>
+                  <option value="per_hour">{t.editor.unitPerHour}</option>
+                </select>
+              </div>
+
+              {primaryRes?.kind === 'fluid' ? (
+                <div
+                  className="flex items-center p-0.5 bg-[#121316] border border-[#2A3240] rounded"
+                  title={t.editor.fluidScalePresetsTooltip}
+                >
+                  {[
+                    { label: '1k/m', perMin: 1000 },
+                    { label: '6k/m', perMin: 6000 },
+                    { label: '15k/m', perMin: 15000 },
+                    { label: '30k/m', perMin: 30000 },
+                    { label: '60k/m', perMin: 60000 },
+                  ].map((p) => {
+                    const targetSec = p.perMin / 60;
+                    const active = Math.abs(primaryTarget.ratePerSec - targetSec) < 0.1;
+                    return (
+                      <button
+                        key={p.label}
+                        type="button"
+                        onClick={() =>
+                          updateConfig((prev) => ({
+                            ...prev,
+                            targets: [
+                              { ...prev.targets[0], ratePerSec: targetSec },
+                              ...prev.targets.slice(1),
+                            ],
+                          }))
+                        }
+                        className={`px-1.5 py-1 text-[10px] font-mono tabular-nums rounded transition-colors ${
+                          active
+                            ? 'bg-cyan-500/25 text-cyan-300 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div
+                  className="flex items-center p-0.5 bg-[#121316] border border-[#2A3240] rounded"
+                  title={t.editor.beltScalePresetsTooltip}
+                >
+                  {[1, 2, 4, 8, 16].map((mult) => {
+                    const targetSec = mult * beltSpeedPerSec;
+                    const active = Math.abs(primaryTarget.ratePerSec - targetSec) < 0.05;
+                    return (
+                      <button
+                        key={mult}
+                        type="button"
+                        title={`${mult}× ${activeBelt?.name ?? ''} = ${targetSec}/s`}
+                        onClick={() =>
+                          updateConfig((prev) => ({
+                            ...prev,
+                            targets: [
+                              { ...prev.targets[0], ratePerSec: targetSec },
+                              ...prev.targets.slice(1),
+                            ],
+                          }))
+                        }
+                        className={`px-1.5 py-1 text-[10px] font-mono tabular-nums rounded transition-colors ${
+                          active
+                            ? 'bg-amber-500/25 text-amber-300 font-semibold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {mult}×
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -482,12 +570,29 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 defaultBeltId={project.config.defaultBeltId ?? 'express-transport-belt'}
                 compactionMode={project.compactionMode}
                 layoutOptions={project.layoutOptions}
+                hasGridFrame={Boolean(project.gridFrame && project.gridFrame.length > 0)}
                 selectedStageId={selectedStageId}
                 onSelectStage={setSelectedStageId}
                 onChangeEntities={(next: GridEntity[]) =>
                   onUpdateProject((prev) => ({
                     ...prev,
                     customEntities: next,
+                    updatedAt: new Date().toISOString(),
+                  }))
+                }
+                onImportGridFrame={(frameEntities: GridEntity[]) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    gridFrame: frameEntities.map((fe) => ({ ...fe, isGridFrame: true })),
+                    customEntities: undefined,
+                    updatedAt: new Date().toISOString(),
+                  }))
+                }
+                onClearGridFrame={() =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    gridFrame: undefined,
+                    customEntities: undefined,
                     updatedAt: new Date().toISOString(),
                   }))
                 }

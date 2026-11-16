@@ -22,6 +22,8 @@ export interface FactoryProject {
   };
   /** Optional user-edited spatial layout entities (overrides auto-layout until reset) */
   customEntities?: GridEntity[];
+  /** Optional imported external Base Grid Frame entities (rails, roboports, walls, substations) */
+  gridFrame?: GridEntity[];
   createdAt: string;
   updatedAt: string;
 }
@@ -153,6 +155,57 @@ export const PROJECT_TEMPLATES: Array<Omit<FactoryProject, 'id' | 'createdAt' | 
           moduleIds: ['productivity-module-3', 'productivity-module-3'],
         },
       },
+    },
+  },
+  {
+    name: 'Iron Plate · 4 Esteiras Azuis (180/s)',
+    description: 'Fundição em larga escala com Fornalhas Elétricas alimentadas por 4 esteiras completas de minério.',
+    rateUnit: 'per_second',
+    compactionMode: 'compact',
+    config: {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'iron-plate', ratePerSec: 180 }],
+      defaultBeltId: 'express-transport-belt',
+      defaultInserterId: 'fast-inserter',
+    },
+  },
+  {
+    name: 'Plástico em Larga Escala · 4 Esteiras (180/s)',
+    description: 'Complexo químico com Refinamento Avançado, Cracking Pesado/Leve, Água e Carvão balanceados.',
+    rateUnit: 'per_second',
+    compactionMode: 'compact',
+    config: {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'plastic-bar', ratePerSec: 180 }],
+      defaultBeltId: 'express-transport-belt',
+      defaultInserterId: 'fast-inserter',
+    },
+  },
+  {
+    name: 'Low Density Structure · 2 Esteiras (90/s)',
+    description: 'Produção massiva de Estruturas de Baixa Densidade balanceando Plástico, Cobre e Aço desde os minérios.',
+    rateUnit: 'per_second',
+    compactionMode: 'compact',
+    config: {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'low-density-structure', ratePerSec: 90 }],
+      defaultBeltId: 'express-transport-belt',
+      defaultInserterId: 'fast-inserter',
+    },
+  },
+  {
+    name: 'Gás de Petróleo & Urânio · Larga Escala',
+    description: 'Extração balanceada de Gás de Petróleo (15.000/min) e Minério de Urânio (45/s) com Ácido Sulfúrico.',
+    rateUnit: 'per_minute',
+    compactionMode: 'compact',
+    config: {
+      packId: DEFAULT_PACK_ID,
+      targets: [
+        { itemId: 'petroleum-gas', ratePerSec: 250 },
+        { itemId: 'uranium-ore', ratePerSec: 45 },
+      ],
+      defaultBeltId: 'express-transport-belt',
+      defaultInserterId: 'fast-inserter',
     },
   },
 ];

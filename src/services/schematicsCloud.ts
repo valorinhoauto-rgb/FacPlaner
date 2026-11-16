@@ -105,6 +105,7 @@ interface CompactSchematicPayload {
     inputSide?: 'distributed' | 'south' | 'west';
   };
   blueprintString?: string;
+  gridFrameString?: string;
 }
 
 /**
@@ -180,6 +181,12 @@ export function buildCompactSchematicPayload(
       payload.blueprintString = encoded;
     }
   }
+  if (project.gridFrame && project.gridFrame.length > 0) {
+    const encodedFrame = encodeBlueprintString(project.gridFrame, `${name} Grid Frame`);
+    if (encodedFrame.length <= 32000) {
+      payload.gridFrameString = encodedFrame;
+    }
+  }
 
   return payload;
 }
@@ -224,17 +231,30 @@ export function hydrateFactoryProject(raw: Record<string, unknown>): FactoryProj
   };
 
   let customEntities: FactoryProject['customEntities'];
+  let gridFrame: FactoryProject['gridFrame'];
+  const packs = packRegistry.listPacks();
+  const targetPackId = packs.some((p) => p.id === packId) ? packId : packs[0].id;
+  const idx = packRegistry.getIndex(targetPackId);
+
   if (typeof raw.blueprintString === 'string' && raw.blueprintString.startsWith('0')) {
     try {
-      const packs = packRegistry.listPacks();
-      const targetPackId = packs.some((p) => p.id === packId) ? packId : packs[0].id;
-      const idx = packRegistry.getIndex(targetPackId);
       const parsed = parseBlueprintToEntities(raw.blueprintString, idx);
       if (parsed.entities.length > 0) {
         customEntities = parsed.entities;
       }
     } catch {
       // Fallback gracefully to auto-synthesized layout
+    }
+  }
+
+  if (typeof raw.gridFrameString === 'string' && raw.gridFrameString.startsWith('0')) {
+    try {
+      const parsedFrame = parseBlueprintToEntities(raw.gridFrameString, idx);
+      if (parsedFrame.entities.length > 0) {
+        gridFrame = parsedFrame.entities.map((e) => ({ ...e, isGridFrame: true }));
+      }
+    } catch {
+      // Ignore malformed gridFrameString
     }
   }
 
@@ -250,6 +270,7 @@ export function hydrateFactoryProject(raw: Record<string, unknown>): FactoryProj
         ? (raw.layoutOptions as FactoryProject['layoutOptions'])
         : undefined,
     customEntities,
+    gridFrame,
     createdAt: toIsoString(raw.createdAt),
     updatedAt: toIsoString(raw.updatedAt),
   };
@@ -287,6 +308,7 @@ export async function saveSchematicToCloud(
         researchProductivityBonuses: payload.researchProductivityBonuses ?? deleteField(),
         layoutOptions: payload.layoutOptions ?? deleteField(),
         blueprintString: payload.blueprintString ?? deleteField(),
+        gridFrameString: payload.gridFrameString ?? deleteField(),
         updatedAt: serverTimestamp(),
       };
       await updateDoc(ref, updatePayload);
