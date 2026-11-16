@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 import { packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
 import { synthesizeFactoryLayout } from '../../spatial/layoutSynthesizer.ts';
-import { createProjectFromTemplate, PROJECT_TEMPLATES } from '../../state/projectsStore.ts';
+import {
+  createBlankProject,
+  createProjectFromTemplate,
+  PROJECT_TEMPLATES,
+} from '../../state/projectsStore.ts';
 import {
   buildCompactSchematicPayload,
   hydrateFactoryProject,
@@ -15,6 +19,22 @@ import {
 } from '../schematicsCloud.ts';
 
 describe('Cloud Schematics Compact Serialization', () => {
+  it('starts blank schematics with zero targets and roundtrips cleanly', () => {
+    const blank = createBlankProject();
+    expect(blank.config.targets).toEqual([]);
+
+    const payload = buildCompactSchematicPayload(blank, 'user_123');
+    expect(payload.targets).toEqual([]);
+
+    const restored = hydrateFactoryProject({
+      ...payload,
+      createdAt: blank.createdAt,
+      updatedAt: blank.updatedAt,
+    });
+    expect(restored.config.targets).toEqual([]);
+    expect(restored.name).toBe(blank.name);
+  });
+
   it('stores only minimal configuration when no manual 2D edits exist', () => {
     const project = createProjectFromTemplate(PROJECT_TEMPLATES[0]);
     const payload = buildCompactSchematicPayload(project, 'user_123');

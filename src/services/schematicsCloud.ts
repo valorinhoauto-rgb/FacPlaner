@@ -130,10 +130,6 @@ export function buildCompactSchematicPayload(
       ratePerSec: Number(t.ratePerSec),
     }));
 
-  if (targets.length === 0) {
-    targets.push({ itemId: 'electronic-circuit', ratePerSec: 1 });
-  }
-
   const payload: CompactSchematicPayload = {
     id,
     ownerId,
@@ -205,7 +201,7 @@ export function hydrateFactoryProject(raw: Record<string, unknown>): FactoryProj
           itemId: String(t.itemId),
           ratePerSec: Number(t.ratePerSec ?? 1),
         }))
-      : [{ itemId: 'electronic-circuit', ratePerSec: 1 }],
+      : [],
     defaultBeltId: typeof raw.defaultBeltId === 'string' ? raw.defaultBeltId : undefined,
     defaultInserterId:
       typeof raw.defaultInserterId === 'string' ? raw.defaultInserterId : undefined,

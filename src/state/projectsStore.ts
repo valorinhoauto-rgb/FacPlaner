@@ -158,6 +158,25 @@ export const PROJECT_TEMPLATES: Array<Omit<FactoryProject, 'id' | 'createdAt' | 
 
 const STORAGE_KEY = 'factorio_planner_projects_v1';
 
+export function createBlankProject(packId: string = DEFAULT_PACK_ID): FactoryProject {
+  const now = new Date().toISOString();
+  return {
+    id: `proj_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    name: 'Nova Esquemática',
+    description: 'Escolha o item desejado no Editor para começar a montar a linha de produção.',
+    rateUnit: 'per_minute',
+    compactionMode: 'compact',
+    config: {
+      packId,
+      targets: [],
+      defaultBeltId: 'fast-transport-belt',
+      defaultInserterId: 'fast-inserter',
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export function createProjectFromTemplate(
   tpl: Omit<FactoryProject, 'id' | 'createdAt' | 'updatedAt'>
 ): FactoryProject {
@@ -174,10 +193,7 @@ export function loadSavedProjects(): FactoryProject[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      const defaults = [
-        createProjectFromTemplate(PROJECT_TEMPLATES[0]),
-        createProjectFromTemplate(PROJECT_TEMPLATES[2]),
-      ];
+      const defaults = [createBlankProject()];
       saveProjects(defaults);
       return defaults;
     }
@@ -188,7 +204,7 @@ export function loadSavedProjects(): FactoryProject[] {
   } catch {
     // ignore storage errors
   }
-  return [createProjectFromTemplate(PROJECT_TEMPLATES[0])];
+  return [createBlankProject()];
 }
 
 export function saveProjects(projects: FactoryProject[]): void {

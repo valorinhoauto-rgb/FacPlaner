@@ -13,7 +13,6 @@ import {
   VisualTutorialView,
   type TutorialNavigateTarget,
 } from './components/tutorial/VisualTutorialView.tsx';
-import { DEFAULT_PACK_ID } from './data/packRegistry.ts';
 import { auth, signInWithGoogle, signOutUser } from './firebase.ts';
 import {
   deleteSchematicFromCloud,
@@ -22,9 +21,8 @@ import {
   subscribeUserSchematics,
 } from './services/schematicsCloud.ts';
 import {
-  createProjectFromTemplate,
+  createBlankProject,
   loadSavedProjects,
-  PROJECT_TEMPLATES,
   saveProjects,
   type FactoryProject,
 } from './state/projectsStore.ts';
@@ -210,7 +208,7 @@ export default function App() {
     setProjects((prev) => {
       const remaining = prev.filter((p) => p.id !== projectId);
       if (remaining.length === 0) {
-        const fallback = createProjectFromTemplate(PROJECT_TEMPLATES[0]);
+        const fallback = createBlankProject();
         setActiveProjectId(fallback.id);
         return [fallback];
       }
@@ -246,19 +244,7 @@ export default function App() {
   };
 
   const handleQuickNew = () => {
-    const created = createProjectFromTemplate({
-      name: 'Novo Planejamento',
-      description: 'Linha de produção customizada.',
-      rateUnit: 'per_minute',
-      compactionMode: 'compact',
-      config: {
-        packId: DEFAULT_PACK_ID,
-        targets: [{ itemId: 'electronic-circuit', ratePerSec: 1 }],
-        defaultBeltId: 'fast-transport-belt',
-        defaultInserterId: 'fast-inserter',
-      },
-    });
-    handleCreateProject(created);
+    handleCreateProject(createBlankProject());
   };
 
   return (

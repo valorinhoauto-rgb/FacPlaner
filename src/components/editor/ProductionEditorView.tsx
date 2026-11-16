@@ -39,6 +39,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [pickerMode, setPickerMode] = useState<null | 'primary' | 'add'>(null);
   const [techModalOpen, setTechModalOpen] = useState(false);
+  const [dismissedEmptyId, setDismissedEmptyId] = useState<string | null>(null);
 
   const availablePacks = packRegistry.listPacks();
   const packId = availablePacks.some((p) => p.id === project.config.packId)
@@ -106,12 +107,18 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               type="button"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => setPickerMode((m) => (m === 'primary' ? null : 'primary'))}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-[#181E27] border border-[#2C3748] rounded hover:border-amber-500/70 text-slate-100 whitespace-nowrap"
+              className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded whitespace-nowrap transition-colors ${
+                primaryTarget
+                  ? 'bg-[#181E27] border border-[#2C3748] hover:border-amber-500/70 text-slate-100'
+                  : 'bg-amber-500/15 border border-amber-500/60 hover:bg-amber-500/25 text-amber-300'
+              }`}
             >
-              {primaryTarget && (
+              {primaryTarget ? (
                 <ResourceIcon resource={primaryRes} id={primaryTarget.itemId} size={18} />
+              ) : (
+                <Plus className="w-3.5 h-3.5 text-amber-400" />
               )}
-              <span>{primaryRes?.name ?? primaryTarget?.itemId ?? 'Selecionar Produto'}</span>
+              <span>{primaryRes?.name ?? primaryTarget?.itemId ?? 'Escolher o que produzir'}</span>
             </button>
 
             {pickerMode === 'primary' && (
@@ -207,29 +214,13 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                   const validTargets = prev.targets.filter((t) =>
                     (nextIndex.recipesByProduct.get(t.itemId)?.length ?? 0) > 0
                   );
-                  let nextTargets = validTargets;
-                  if (nextTargets.length === 0) {
-                    const preferredDefaults = [
-                      'kr-singularity-tech-card',
-                      'electromagnetic-science-pack',
-                      'electronic-circuit',
-                    ];
-                    const fallbackId =
-                      preferredDefaults.find(
-                        (id) => (nextIndex.recipesByProduct.get(id)?.length ?? 0) > 0
-                      ) ??
-                      Array.from(nextIndex.recipesByProduct.keys())[0] ??
-                      prev.targets[0]?.itemId ??
-                      'electronic-circuit';
-                    nextTargets = [{ itemId: fallbackId, ratePerSec: prev.targets[0]?.ratePerSec ?? 1 }];
-                  }
                   const beltValid = prev.defaultBeltId && nextIndex.beltsById.has(prev.defaultBeltId);
                   const insValid =
                     prev.defaultInserterId && nextIndex.insertersById.has(prev.defaultInserterId);
                   return {
                     ...prev,
                     packId: nextPackId,
-                    targets: nextTargets,
+                    targets: validTargets,
                     defaultBeltId: beltValid
                       ? prev.defaultBeltId
                       : nextIndex.pack.belts[nextIndex.pack.belts.length - 1]?.id,
@@ -335,75 +326,113 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
       </div>
 
       {/* Secondary Multi-Target Bar (compact) */}
-      <div className="flex items-center gap-3 px-4 py-1.5 bg-[#10141A] border-b border-[#1E2530] text-[11px] text-slate-400 overflow-x-auto">
-        <span className="inline-flex items-center gap-1 text-slate-300 shrink-0">
-          <Cpu className="w-3.5 h-3.5 text-amber-400" />
-          Metas ativas:
-        </span>
-        {project.config.targets.map((t, idx) => {
-          const res = index.resourcesById.get(t.itemId);
-          return (
-            <div key={`${t.itemId}-${idx}`} className="inline-flex items-center gap-1.5 shrink-0">
-              <span className="text-slate-200">{res?.name ?? t.itemId}</span>
-              <span className="font-mono tabular-nums text-amber-400">
-                {(t.ratePerSec * displayUnitMult).toFixed(1)}
-                {project.rateUnit === 'per_second' ? '/s' : project.rateUnit === 'per_minute' ? '/m' : '/h'}
-              </span>
-              {project.config.targets.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() =>
+      {project.config.targets.length > 0 && (
+        <div className="flex items-center gap-3 px-4 py-1.5 bg-[#10141A] border-b border-[#1E2530] text-[11px] text-slate-400 overflow-x-auto">
+          <span className="inline-flex items-center gap-1 text-slate-300 shrink-0">
+            <Cpu className="w-3.5 h-3.5 text-amber-400" />
+            Metas ativas:
+          </span>
+          {project.config.targets.map((t, idx) => {
+            const res = index.resourcesById.get(t.itemId);
+            return (
+              <div key={`${t.itemId}-${idx}`} className="inline-flex items-center gap-1.5 shrink-0">
+                <span className="text-slate-200">{res?.name ?? t.itemId}</span>
+                <span className="font-mono tabular-nums text-amber-400">
+                  {(t.ratePerSec * displayUnitMult).toFixed(1)}
+                  {project.rateUnit === 'per_second' ? '/s' : project.rateUnit === 'per_minute' ? '/m' : '/h'}
+                </span>
+                {project.config.targets.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateConfig((prev) => ({
+                        ...prev,
+                        targets: prev.targets.filter((_, i) => i !== idx),
+                      }))
+                    }
+                    className="text-slate-500 hover:text-red-400"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+                {idx < project.config.targets.length - 1 && <span aria-hidden="true">·</span>}
+              </div>
+            );
+          })}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setPickerMode((m) => (m === 'add' ? null : 'add'))}
+              className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 whitespace-nowrap"
+            >
+              <Plus className="w-3 h-3" />
+              Adicionar meta
+            </button>
+
+            {pickerMode === 'add' && (
+              <div className="fixed left-4 top-28 z-40">
+                <FactorioCraftingPicker
+                  index={index}
+                  title="Adicionar Meta Secundária"
+                  onOpenAssetsImport={() => {
+                    setPickerMode(null);
+                    onOpenAssetsImport?.();
+                  }}
+                  onClose={() => setPickerMode(null)}
+                  onSelect={(itemId) => {
                     updateConfig((prev) => ({
                       ...prev,
-                      targets: prev.targets.filter((_, i) => i !== idx),
-                    }))
-                  }
-                  className="text-slate-500 hover:text-red-400"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              )}
-              {idx < project.config.targets.length - 1 && <span aria-hidden="true">·</span>}
-            </div>
-          );
-        })}
-        <div className="relative shrink-0">
-          <button
-            type="button"
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={() => setPickerMode((m) => (m === 'add' ? null : 'add'))}
-            className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 whitespace-nowrap"
-          >
-            <Plus className="w-3 h-3" />
-            Adicionar meta
-          </button>
-
-          {pickerMode === 'add' && (
-            <div className="fixed left-4 top-28 z-40">
-              <FactorioCraftingPicker
-                index={index}
-                title="Adicionar Meta Secundária"
-                onOpenAssetsImport={() => {
-                  setPickerMode(null);
-                  onOpenAssetsImport?.();
-                }}
-                onClose={() => setPickerMode(null)}
-                onSelect={(itemId) => {
-                  updateConfig((prev) => ({
-                    ...prev,
-                    targets: [...prev.targets, { itemId, ratePerSec: 1 }],
-                  }));
-                  setPickerMode(null);
-                }}
-              />
-            </div>
-          )}
+                      targets: [...prev.targets, { itemId, ratePerSec: 1 }],
+                    }));
+                    setPickerMode(null);
+                  }}
+                />
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Workspace Body: Canvas + Inspector */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
+          {project.config.targets.length === 0 &&
+            activeEntities.length === 0 &&
+            pickerMode === null &&
+            dismissedEmptyId !== project.id && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center p-6 pointer-events-none">
+                <div className="pointer-events-auto max-w-md w-full bg-[#12161D]/95 border border-[#2B3545] rounded-md p-6 shadow-2xl space-y-4 text-center">
+                  <div className="space-y-1.5">
+                    <h2 className="text-base font-semibold text-slate-100">
+                      Esquemática zerada
+                    </h2>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Escolha o item ou fluido que você deseja produzir para gerar automaticamente a cadeia de máquinas, esteiras e insertores — ou desenhe direto na grade.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => setPickerMode('primary')}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Escolher Produto para Montar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDismissedEmptyId(project.id)}
+                      className="px-3 py-2 text-xs font-medium text-slate-300 bg-[#181E27] border border-[#2C3748] rounded hover:text-white transition-colors"
+                    >
+                      Desenhar manualmente
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
           {(viewMode === 'spatial' || viewMode === 'split') && (
             <div className={`${viewMode === 'split' ? 'w-1/2 border-r border-[#252C37]' : 'w-full'} h-full`}>
               <BlueprintGridCanvas

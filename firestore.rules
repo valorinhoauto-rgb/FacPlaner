@@ -106,16 +106,17 @@ service cloud.firestore {
         && data.rateUnit in ['per_second', 'per_minute', 'per_hour']
         && data.compactionMode in ['compact', 'standard']
         && data.targets is list
-        && data.targets.size() >= 1
         && data.targets.size() <= 12
-        && data.targets[0] is map
-        && data.targets[0].keys().hasAll(['itemId', 'ratePerSec'])
-        && data.targets[0].keys().hasOnly(['itemId', 'ratePerSec'])
-        && data.targets[0].itemId is string
-        && data.targets[0].itemId.size() >= 1
-        && data.targets[0].itemId.size() <= 80
-        && data.targets[0].ratePerSec is number
-        && data.targets[0].ratePerSec > 0
+        && (data.targets.size() == 0 || (
+          data.targets[0] is map
+          && data.targets[0].keys().hasAll(['itemId', 'ratePerSec'])
+          && data.targets[0].keys().hasOnly(['itemId', 'ratePerSec'])
+          && data.targets[0].itemId is string
+          && data.targets[0].itemId.size() >= 1
+          && data.targets[0].itemId.size() <= 80
+          && data.targets[0].ratePerSec is number
+          && data.targets[0].ratePerSec > 0
+        ))
         && (!('defaultBeltId' in data) || (data.defaultBeltId is string && data.defaultBeltId.size() >= 1 && data.defaultBeltId.size() <= 80))
         && (!('defaultInserterId' in data) || (data.defaultInserterId is string && data.defaultInserterId.size() >= 1 && data.defaultInserterId.size() <= 80))
         && (!('rawResourceOverrides' in data) || (

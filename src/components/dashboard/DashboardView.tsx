@@ -20,6 +20,7 @@ import {
 import { packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
 import {
+  createBlankProject,
   createProjectFromTemplate,
   formatRate,
   PROJECT_TEMPLATES,
@@ -73,19 +74,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const handleCreateBlank = () => {
     const packId = packRegistry.listPacks()[0].id;
-    const blank = createProjectFromTemplate({
-      name: 'Novo Planejamento Industrial',
-      description: 'Linha de produção customizada.',
-      rateUnit: 'per_minute',
-      compactionMode: 'compact',
-      config: {
-        packId,
-        targets: [{ itemId: 'electronic-circuit', ratePerSec: 1 }],
-        defaultBeltId: 'fast-transport-belt',
-        defaultInserterId: 'fast-inserter',
-      },
-    });
-    onCreateProject(blank);
+    onCreateProject(createBlankProject(packId));
   };
 
   const handleExportJson = (project: FactoryProject) => {
@@ -105,7 +94,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as FactoryProject;
-      if (!parsed.config?.targets?.length) {
+      if (!parsed.config || !Array.isArray(parsed.config.targets)) {
         throw new Error('Arquivo JSON não contém configuração válida de planejamento.');
       }
       const imported: FactoryProject = {
@@ -269,7 +258,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <span className="font-mono tabular-nums shrink-0">
                               {primaryTarget
                                 ? formatRate(primaryTarget.ratePerSec, project.rateUnit)
-                                : '—'}
+                                : 'Sem produto'}
                             </span>
                           </div>
                         </div>
