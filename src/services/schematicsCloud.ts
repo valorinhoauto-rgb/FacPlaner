@@ -102,6 +102,7 @@ interface CompactSchematicPayload {
     includeBeacons?: boolean;
     includePowerPoles?: boolean;
     directInsertion?: boolean;
+    inputSide?: 'distributed' | 'south' | 'west';
   };
   blueprintString?: string;
 }

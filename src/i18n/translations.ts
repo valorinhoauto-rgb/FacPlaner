@@ -99,12 +99,36 @@ export interface Translations {
     flowView: string;
     splitView: string;
     technologies: string;
+    chainButton: string;
     activeTargets: string;
     addTarget: string;
     emptyTitle: string;
     emptyDescription: string;
     emptyChooseButton: string;
     emptyDrawManualButton: string;
+  };
+  chain: {
+    title: string;
+    subtitle: string;
+    presetsLabel: string;
+    presetFull: string;
+    presetNoSmelting: string;
+    presetDirectOnly: string;
+    badgeTarget: string;
+    badgeCrafted: string;
+    badgeExternal: string;
+    badgeNaturalRaw: string;
+    badgePrimary: string;
+    repeatedRef: string;
+    collapsedSubsteps: (count: number) => string;
+    clickToToggleExternal: string;
+    clickToToggleCraft: string;
+    summaryExternalTitle: string;
+    summaryNoExternal: string;
+    summaryStats: (stages: number, machines: number, externalCount: number) => string;
+    alignSameSideCta: string;
+    alignSameSideActive: string;
+    confirmButton: string;
   };
   picker: {
     defaultTitle: string;
@@ -232,6 +256,14 @@ export interface Translations {
     poles: string;
     directInsertion: string;
     directInsertionTooltip: string;
+    sameSideInputs: string;
+    sameSideTooltip: string;
+    inputSideSouth: string;
+    inputSideWest: string;
+    portIn: string;
+    portOut: string;
+    beltsShort: string;
+    pipeShort: string;
     spaceCompact: string;
     spaceStandard: string;
     autoLayout: string;
@@ -561,6 +593,7 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       flowView: 'Fluxograma',
       splitView: 'Dividido',
       technologies: 'Tecnologias',
+      chainButton: 'Cadeia & Entradas',
       activeTargets: 'Metas ativas:',
       addTarget: 'Adicionar meta',
       emptyTitle: 'Esquemática zerada',
@@ -568,6 +601,31 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Escolha o item ou fluido que você deseja produzir para gerar automaticamente a cadeia de máquinas, esteiras e insertores — ou desenhe direto na grade.',
       emptyChooseButton: 'Escolher Produto para Montar',
       emptyDrawManualButton: 'Desenhar manualmente',
+    },
+    chain: {
+      title: 'Escopo da Cadeia & Recursos Primários',
+      subtitle:
+        'Clique em qualquer item da cadeia para escolher se será fabricado dentro desta Blueprint ou se virá de fora (por trem / Main Bus).',
+      presetsLabel: 'Perfis rápidos:',
+      presetFull: 'Cadeia Completa (Desde Minérios)',
+      presetNoSmelting: 'Sem Fundição (Trazer Placas & Químicos)',
+      presetDirectOnly: 'Só Montagem Final (Trazer Ingredientes)',
+      badgeTarget: 'Meta Final',
+      badgeCrafted: 'Fabricar na BP',
+      badgeExternal: 'Trazer de Fora (Trem)',
+      badgeNaturalRaw: 'Recurso Bruto',
+      badgePrimary: 'Primário',
+      repeatedRef: 'já listado acima',
+      collapsedSubsteps: (count) => `${count} sub-etapa(s) anterior(es) omitida(s)`,
+      clickToToggleExternal: 'Clique para trazer de fora (não fabricar na BP)',
+      clickToToggleCraft: 'Clique para incluir a fabricação na BP',
+      summaryExternalTitle: 'Entradas que virão de fora na Blueprint:',
+      summaryNoExternal: 'Nenhum recurso selecionado.',
+      summaryStats: (stages, machines, externalCount) =>
+        `${stages} etapas ativas · ${machines} máquinas · ${externalCount} entradas externas`,
+      alignSameSideCta: 'Alinhar todas as entradas no mesmo lado (Trem)',
+      alignSameSideActive: 'Entradas alinhadas no mesmo lado',
+      confirmButton: 'Aplicar na Blueprint',
     },
     picker: {
       defaultTitle: 'Selecionar Produto',
@@ -710,6 +768,15 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       directInsertion: 'Inserção Direta',
       directInsertionTooltip:
         'Acopla máquinas que alimentam apenas 1 etapa (ex: Cabo de Cobre -> Circuito Verde) sem esteira intermediária',
+      sameSideInputs: 'Entradas Mesmo Lado',
+      sameSideTooltip:
+        'Adapta a blueprint para trazer todas as entradas externas pelo mesmo lado (ideal para grids com estação de trem)',
+      inputSideSouth: 'Sul ↓',
+      inputSideWest: 'Oeste ←',
+      portIn: 'ENTRA',
+      portOut: 'SAI',
+      beltsShort: 'est.',
+      pipeShort: 'Tubo',
       spaceCompact: 'Espaço: Compacto',
       spaceStandard: 'Espaço: Padrão',
       autoLayout: 'Auto-Layout',
@@ -1204,6 +1271,7 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       flowView: 'Flow Graph',
       splitView: 'Split View',
       technologies: 'Technologies',
+      chainButton: 'Chain & Inputs',
       activeTargets: 'Active targets:',
       addTarget: 'Add target',
       emptyTitle: 'Empty Schematic',
@@ -1211,6 +1279,31 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Pick the item or fluid you want to manufacture to automatically synthesize machines, belts, and inserters — or draw directly on the grid.',
       emptyChooseButton: 'Choose Product to Build',
       emptyDrawManualButton: 'Draw manually',
+    },
+    chain: {
+      title: 'Production Chain & Primary Resources',
+      subtitle:
+        'Click any item in the dependency chain to decide whether it is crafted inside this blueprint or brought in from outside (Train / Main Bus).',
+      presetsLabel: 'Quick presets:',
+      presetFull: 'Full Chain (From Raw Ores)',
+      presetNoSmelting: 'No Smelting (Bring Plates & Chemicals)',
+      presetDirectOnly: 'Final Assembly Only (Train Inputs)',
+      badgeTarget: 'Final Target',
+      badgeCrafted: 'Craft in BP',
+      badgeExternal: 'External Input (Train)',
+      badgeNaturalRaw: 'Raw Ore / Fluid',
+      badgePrimary: 'Primary',
+      repeatedRef: 'shown above',
+      collapsedSubsteps: (count) => `${count} upstream step(s) omitted`,
+      clickToToggleExternal: 'Click to supply from outside (exclude from BP)',
+      clickToToggleCraft: 'Click to include crafting inside BP',
+      summaryExternalTitle: 'External inputs entering this blueprint:',
+      summaryNoExternal: 'No external resources selected.',
+      summaryStats: (stages, machines, externalCount) =>
+        `${stages} active stages · ${machines} machines · ${externalCount} external inputs`,
+      alignSameSideCta: 'Align all inputs to same side (Train Grid)',
+      alignSameSideActive: 'All inputs aligned to same side',
+      confirmButton: 'Apply to Blueprint',
     },
     picker: {
       defaultTitle: 'Select Product',
@@ -1353,6 +1446,15 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       directInsertion: 'Direct Insertion',
       directInsertionTooltip:
         'Couples machines feeding a single downstream stage (e.g. Copper Cable -> Green Circuit) without an intermediate belt',
+      sameSideInputs: 'Same-Side Inputs',
+      sameSideTooltip:
+        'Adapts the blueprint so all external inputs enter from the same edge (ideal for rail city-block grids)',
+      inputSideSouth: 'South ↓',
+      inputSideWest: 'West ←',
+      portIn: 'IN',
+      portOut: 'OUT',
+      beltsShort: 'belts',
+      pipeShort: 'Pipe',
       spaceCompact: 'Space: Compact',
       spaceStandard: 'Space: Standard',
       autoLayout: 'Auto-Layout',

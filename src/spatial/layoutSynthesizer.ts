@@ -7,6 +7,8 @@ import type { Direction, PackIndex } from '../data/schema.ts';
 import type { PlanConfig, SolveResult, SolvedStage } from '../engine/types.ts';
 import type {
   GridEntity,
+  InputAlignmentSide,
+  LayoutPortMarker,
   LayoutSynthesisOptions,
   SpatialLayoutStats,
   StageZone,
@@ -164,17 +166,21 @@ export function synthesizeFactoryLayout(
           includeBeacons: true,
           includePowerPoles: true,
           directInsertion: false,
+          inputSide: 'distributed',
         }
       : {
           compactionMode: modeOrOptions.compactionMode ?? 'compact',
           includeBeacons: modeOrOptions.includeBeacons ?? true,
           includePowerPoles: modeOrOptions.includePowerPoles ?? true,
           directInsertion: modeOrOptions.directInsertion ?? false,
+          inputSide: modeOrOptions.inputSide ?? 'distributed',
         };
 
   const compactionMode = options.compactionMode;
+  const inputSide: InputAlignmentSide = options.inputSide;
   const grid = new OccupancyGrid();
   const zones: StageZone[] = [];
+  const ports: LayoutPortMarker[] = [];
 
   const beltDef =
     index.beltsById.get(config.defaultBeltId ?? 'express-transport-belt') ??
@@ -247,8 +253,22 @@ export function synthesizeFactoryLayout(
   }
 
   const sortedLayers = Array.from(layersMap.keys()).sort((a, b) => a - b);
-  const blockGapX = compactionMode === 'compact' ? 3 : 5;
-  const layerGapY = compactionMode === 'compact' ? 4 : 6;
+  const blockGapX =
+    inputSide !== 'distributed'
+      ? compactionMode === 'compact'
+        ? 4
+        : 6
+      : compactionMode === 'compact'
+        ? 3
+        : 5;
+  const layerGapY =
+    inputSide !== 'distributed'
+      ? compactionMode === 'compact'
+        ? 6
+        : 8
+      : compactionMode === 'compact'
+        ? 4
+        : 6;
 
   const stageOutputAnchors = new Map<
     string,
@@ -300,7 +320,12 @@ export function synthesizeFactoryLayout(
       const rightInputTracks = inputTracks.length > 2 ? 1 : 0;
       const leftCorridorW = leftTracks > 0 ? leftTracks + 2 : 0;
       const rightInputW = rightInputTracks > 0 ? rightInputTracks + 2 : 0;
-      const fluidW = fluidInputs.length > 0 || fluidOutputs.length > 0 ? 2 : 0;
+      const fluidW =
+        fluidInputs.length > 1
+          ? fluidInputs.length + 1
+          : fluidInputs.length > 0 || fluidOutputs.length > 0
+            ? 2
+            : 0;
 
       const feederUnitW =
         directPair && feederMachine
@@ -900,6 +925,29 @@ export function synthesizeFactoryLayout(
             kind: 'fluid',
           });
         }
+        // Additional fluid inputs (e.g., water + crude-oil) get an adjacent dedicated stub anchor
+        for (let fi = 1; fi < fluidInputs.length; fi++) {
+          const extraPipeX = pipeX - fi;
+          if (grid.canPlace(extraPipeX, blockBottomY - 1, 1, 1)) {
+            grid.place({
+              kind: 'pipe',
+              name: 'pipe',
+              tileX: extraPipeX,
+              tileY: blockBottomY - 1,
+              width: 1,
+              height: 1,
+              direction: 0,
+              fluidId: fluidInputs[fi].itemId,
+              stageId: stage.id,
+            });
+          }
+          inAnchors.push({
+            x: extraPipeX,
+            y: blockBottomY - 1,
+            itemId: fluidInputs[fi].itemId,
+            kind: 'fluid',
+          });
+        }
         if (fluidOutputs[0]) {
           outAnchors.push({
             x: pipeX,
@@ -983,35 +1031,593 @@ export function synthesizeFactoryLayout(
     }
   }
 
-  // Raw-input feeder stubs
+  // 5. Raw / External Input Feeders + Port Markers (Distributed OR Same-Side Train Grid)
+  interface GroupedRawPortRequest {
+    key: string;
+    itemId: string;
+    partnerItemId?: string;
+    kind: 'item' | 'fluid';
+    ratePerSec: number;
+    beltsRequired: number;
+    anchor: { x: number; y: number; itemId: string; kind: 'item' | 'fluid' };
+  }
+
+  const rawRequestByAnchor = new Map<string, GroupedRawPortRequest>();
   for (const edge of solveResult.edges) {
-    if (!edge.sourceStageId.startsWith('RAW:') || edge.kind !== 'item') continue;
+    if (!edge.sourceStageId.startsWith('RAW:')) continue;
     const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-    const dst = toAnchors.find((a) => a.itemId === edge.itemId);
+    const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
     if (!dst) continue;
-    for (let dy = 1; dy <= 3; dy++) {
-      grid.placeOrMergeBelt(dst.x, dst.y + dy, beltName, 0, {
-        left: edge.itemId,
-        right: edge.itemId,
+
+    const anchorKey = `${dst.kind}:${dst.x},${dst.y}`;
+    const existing = rawRequestByAnchor.get(anchorKey);
+    if (existing) {
+      if (existing.itemId !== edge.itemId && !existing.partnerItemId) {
+        existing.partnerItemId = edge.itemId;
+      }
+      existing.ratePerSec += edge.actualRatePerSec;
+      existing.beltsRequired += edge.beltsRequired;
+    } else {
+      rawRequestByAnchor.set(anchorKey, {
+        key: anchorKey,
+        itemId: edge.itemId,
+        kind: edge.kind,
+        ratePerSec: edge.actualRatePerSec,
+        beltsRequired: edge.beltsRequired,
+        anchor: dst,
       });
     }
   }
 
-  // Final output belt stubs
+  const rawRequests = Array.from(rawRequestByAnchor.values()).sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'item' ? -1 : 1;
+    if (a.itemId !== b.itemId) return a.itemId.localeCompare(b.itemId);
+    return a.anchor.x - b.anchor.x || a.anchor.y - b.anchor.y;
+  });
+
+  if (inputSide === 'distributed') {
+    for (const req of rawRequests) {
+      const { anchor } = req;
+      for (let dy = 1; dy <= 3; dy++) {
+        if (req.kind === 'item') {
+          grid.placeOrMergeBelt(anchor.x, anchor.y + dy, beltName, 0, {
+            left: req.itemId,
+            right: req.partnerItemId ?? req.itemId,
+          });
+        } else if (grid.canPlace(anchor.x, anchor.y + dy, 1, 1)) {
+          grid.place({
+            kind: 'pipe',
+            name: 'pipe',
+            tileX: anchor.x,
+            tileY: anchor.y + dy,
+            width: 1,
+            height: 1,
+            direction: 0,
+            fluidId: req.itemId,
+          });
+        }
+      }
+      ports.push({
+        id: `IN:${req.key}`,
+        directionType: 'input',
+        itemId: req.itemId,
+        partnerItemId: req.partnerItemId,
+        kind: req.kind,
+        tileX: anchor.x,
+        tileY: anchor.y + 3,
+        ratePerSec: req.ratePerSec,
+        beltsRequired: req.beltsRequired,
+        side: 'south',
+      });
+    }
+  } else if (rawRequests.length > 0) {
+    const preBounds = computeLayoutStats(grid.entities).bounds;
+    const routingBounds = {
+      minX: preBounds.minX - 14,
+      maxX: preBounds.maxX + 14,
+      minY: preBounds.minY - 12,
+      maxY: preBounds.maxY + 12,
+    };
+
+    if (inputSide === 'south') {
+      const entryY = preBounds.maxY + 5;
+      const centerX = Math.round((preBounds.minX + preBounds.maxX) / 2);
+      const totalSpan = Math.max(0, (rawRequests.length - 1) * 2);
+      const startSlotX = centerX - Math.floor(totalSpan / 2);
+      const southRoutingBounds = {
+        ...routingBounds,
+        maxY: entryY - 1,
+      };
+
+      // Reserve all South entry stubs BEFORE routing so earlier paths never cross another slot
+      const slots = rawRequests.map((req, idx) => {
+        const slotX = startSlotX + idx * 2;
+        for (let dy = 2; dy >= 0; dy--) {
+          placeFeederTile(grid, slotX, entryY + dy, req, beltName, 0);
+        }
+        return { req, slotX };
+      });
+
+      slots.forEach(({ req, slotX }) => {
+        const targetEntry = findBestFeederTarget(grid, req.anchor);
+        const routed = routeExternalFeederPath(
+          grid,
+          { x: slotX, y: entryY - 1, dir: 0 },
+          targetEntry,
+          req,
+          beltName,
+          undergroundName,
+          southRoutingBounds
+        );
+
+        if (!routed) {
+          // Connect fallback stub directly below block if needed while keeping port aligned
+          for (let dy = 1; dy <= 3; dy++) {
+            placeFeederTile(grid, req.anchor.x, req.anchor.y + dy, req, beltName, 0);
+          }
+        }
+
+        ports.push({
+          id: `IN:${req.key}`,
+          directionType: 'input',
+          itemId: req.itemId,
+          partnerItemId: req.partnerItemId,
+          kind: req.kind,
+          tileX: slotX,
+          tileY: entryY + 2,
+          ratePerSec: req.ratePerSec,
+          beltsRequired: req.beltsRequired,
+          side: 'south',
+        });
+      });
+    } else {
+      // inputSide === 'west' (all train inputs aligned along the West/Left border!)
+      const entryX = preBounds.minX - 5;
+      const centerY = Math.round((preBounds.minY + preBounds.maxY) / 2);
+      const totalSpan = Math.max(0, (rawRequests.length - 1) * 2);
+      const startSlotY = centerY - Math.floor(totalSpan / 2);
+      const westRoutingBounds = {
+        ...routingBounds,
+        minX: entryX + 1,
+      };
+
+      // Reserve all West entry stubs BEFORE routing so earlier paths never cross another slot
+      const slots = rawRequests.map((req, idx) => {
+        const slotY = startSlotY + idx * 2;
+        for (let dx = 2; dx >= 0; dx--) {
+          placeFeederTile(grid, entryX - dx, slotY, req, beltName, 4);
+        }
+        return { req, slotY };
+      });
+
+      slots.forEach(({ req, slotY }) => {
+        const targetEntry = findBestFeederTarget(grid, req.anchor);
+        const routed = routeExternalFeederPath(
+          grid,
+          { x: entryX + 1, y: slotY, dir: 4 },
+          targetEntry,
+          req,
+          beltName,
+          undergroundName,
+          westRoutingBounds
+        );
+
+        if (!routed) {
+          for (let dy = 1; dy <= 3; dy++) {
+            placeFeederTile(grid, req.anchor.x, req.anchor.y + dy, req, beltName, 0);
+          }
+        }
+
+        ports.push({
+          id: `IN:${req.key}`,
+          directionType: 'input',
+          itemId: req.itemId,
+          partnerItemId: req.partnerItemId,
+          kind: req.kind,
+          tileX: entryX - 2,
+          tileY: slotY,
+          ratePerSec: req.ratePerSec,
+          beltsRequired: req.beltsRequired,
+          side: 'west',
+        });
+      });
+    }
+  }
+
+  // 6. Final Output Belt/Pipe Stubs + Output Port Markers
+  const emittedOutputPorts = new Set<string>();
+  const currentPreOutBounds = computeLayoutStats(grid.entities).bounds;
   for (const edge of solveResult.edges) {
-    if (!edge.targetStageId.startsWith('TARGET:') || edge.kind !== 'item') continue;
+    if (!edge.targetStageId.startsWith('TARGET:')) continue;
     const fromAnchors = stageOutputAnchors.get(edge.sourceStageId) ?? [];
-    const src = fromAnchors.find((a) => a.itemId === edge.itemId);
+    const src = fromAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
     if (!src) continue;
-    for (let dy = 1; dy <= 3; dy++) {
-      grid.placeOrMergeBelt(src.x, src.y - dy, beltName, 0, {
-        left: edge.itemId,
-        right: edge.itemId,
-      });
+    const outKey = `${edge.kind}:${src.x},${src.y}:${edge.itemId}`;
+    if (emittedOutputPorts.has(outKey)) continue;
+    emittedOutputPorts.add(outKey);
+
+    let tipY = src.y - 3;
+    if (inputSide !== 'distributed') {
+      const alignedExitY = currentPreOutBounds.minY - 3;
+      if (alignedExitY < src.y - 3) {
+        let canReachStraight = true;
+        for (let y = src.y - 1; y >= alignedExitY; y--) {
+          if (!grid.canPlace(src.x, y, 1, 1)) {
+            canReachStraight = false;
+            break;
+          }
+        }
+        if (canReachStraight) {
+          tipY = alignedExitY;
+        }
+      }
+    }
+
+    for (let y = src.y - 1; y >= tipY; y--) {
+      if (edge.kind === 'item') {
+        grid.placeOrMergeBelt(src.x, y, beltName, 0, {
+          left: edge.itemId,
+          right: edge.itemId,
+        });
+      } else if (grid.canPlace(src.x, y, 1, 1)) {
+        grid.place({
+          kind: 'pipe',
+          name: 'pipe',
+          tileX: src.x,
+          tileY: y,
+          width: 1,
+          height: 1,
+          direction: 0,
+          fluidId: edge.itemId,
+        });
+      }
+    }
+
+    ports.push({
+      id: `OUT:${outKey}`,
+      directionType: 'output',
+      itemId: edge.itemId,
+      kind: edge.kind,
+      tileX: src.x,
+      tileY: tipY,
+      ratePerSec: edge.actualRatePerSec,
+      beltsRequired: edge.beltsRequired,
+      side: 'north',
+    });
+  }
+
+  return finalizeLayout(grid.entities, zones, ports, compactionMode);
+}
+
+function findBestFeederTarget(
+  grid: OccupancyGrid,
+  anchor: { x: number; y: number; itemId: string; kind: 'item' | 'fluid' }
+): { x: number; y: number; dir: Direction } {
+  const below = grid.getAt(anchor.x, anchor.y + 1);
+  if (!below) {
+    return { x: anchor.x, y: anchor.y + 1, dir: 0 };
+  }
+  for (let dy = 1; dy <= 3; dy++) {
+    if (!grid.getAt(anchor.x, anchor.y + dy)) {
+      return { x: anchor.x, y: anchor.y + dy, dir: 0 };
+    }
+  }
+  return { x: anchor.x, y: anchor.y + 1, dir: 0 };
+}
+
+function placeFeederTile(
+  grid: OccupancyGrid,
+  x: number,
+  y: number,
+  req: { itemId: string; partnerItemId?: string; kind: 'item' | 'fluid' },
+  beltName: string,
+  direction: Direction
+): void {
+  if (req.kind === 'item') {
+    grid.placeOrMergeBelt(x, y, beltName, direction, {
+      left: req.itemId,
+      right: req.partnerItemId ?? req.itemId,
+    });
+  } else if (grid.canPlace(x, y, 1, 1)) {
+    grid.place({
+      kind: 'pipe',
+      name: 'pipe',
+      tileX: x,
+      tileY: y,
+      width: 1,
+      height: 1,
+      direction,
+      fluidId: req.itemId,
+    });
+  }
+}
+
+interface PathStep {
+  x: number;
+  y: number;
+  dir: Direction;
+  type: 'normal' | 'underground';
+  jumpLen?: number;
+}
+
+function dirDelta(dir: Direction): { dx: number; dy: number } {
+  if (dir === 0) return { dx: 0, dy: -1 };
+  if (dir === 4) return { dx: 1, dy: 0 };
+  if (dir === 8) return { dx: 0, dy: 1 };
+  return { dx: -1, dy: 0 };
+}
+
+function routeExternalFeederPath(
+  grid: OccupancyGrid,
+  start: { x: number; y: number; dir: Direction },
+  goal: { x: number; y: number; dir: Direction },
+  req: { itemId: string; partnerItemId?: string; kind: 'item' | 'fluid' },
+  beltName: string,
+  undergroundName: string,
+  bounds: { minX: number; maxX: number; minY: number; maxY: number }
+): boolean {
+  const canOccupyNormal = (x: number, y: number, dir: Direction): boolean => {
+    if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) return false;
+    const ex = grid.getAt(x, y);
+    if (!ex) return true;
+    if (req.kind === 'item') {
+      return (
+        ex.kind === 'transport-belt' &&
+        ex.direction === dir &&
+        (ex.beltLanes?.left === req.itemId || ex.beltLanes?.right === req.itemId)
+      );
+    }
+    return ex.kind === 'pipe' && ex.fluidId === req.itemId;
+  };
+
+  if (!canOccupyNormal(start.x, start.y, start.dir) || !canOccupyNormal(goal.x, goal.y, goal.dir)) {
+    return false;
+  }
+
+  interface AStarNode {
+    x: number;
+    y: number;
+    dir: Direction;
+    g: number;
+    f: number;
+    parentIdx: number;
+    stepType: 'normal' | 'underground';
+    jumpLen?: number;
+  }
+
+  const nodes: AStarNode[] = [
+    {
+      x: start.x,
+      y: start.y,
+      dir: start.dir,
+      g: 0,
+      f: Math.abs(goal.x - start.x) + Math.abs(goal.y - start.y),
+      parentIdx: -1,
+      stepType: 'normal',
+    },
+  ];
+  const openHeap: number[] = [0];
+  const bestCost = new Map<string, number>();
+  bestCost.set(`${start.x},${start.y},${start.dir}`, 0);
+
+  const pushHeap = (idx: number) => {
+    openHeap.push(idx);
+    let i = openHeap.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (nodes[openHeap[p]].f <= nodes[openHeap[i]].f) break;
+      const tmp = openHeap[p];
+      openHeap[p] = openHeap[i];
+      openHeap[i] = tmp;
+      i = p;
+    }
+  };
+
+  const popHeap = (): number => {
+    const top = openHeap[0];
+    const last = openHeap.pop()!;
+    if (openHeap.length > 0) {
+      openHeap[0] = last;
+      let i = 0;
+      const n = openHeap.length;
+      while (true) {
+        let smallest = i;
+        const l = i * 2 + 1;
+        const r = i * 2 + 2;
+        if (l < n && nodes[openHeap[l]].f < nodes[openHeap[smallest]].f) smallest = l;
+        if (r < n && nodes[openHeap[r]].f < nodes[openHeap[smallest]].f) smallest = r;
+        if (smallest === i) break;
+        const tmp = openHeap[i];
+        openHeap[i] = openHeap[smallest];
+        openHeap[smallest] = tmp;
+        i = smallest;
+      }
+    }
+    return top;
+  };
+
+  const allDirs: Direction[] = [0, 4, 8, 12];
+  const maxJump = req.kind === 'fluid' ? 8 : 5;
+  let goalIdx = -1;
+  let expansions = 0;
+
+  while (openHeap.length > 0 && expansions < 8000) {
+    const curIdx = popHeap();
+    const cur = nodes[curIdx];
+    expansions++;
+
+    if (cur.x === goal.x && cur.y === goal.y && (cur.stepType === 'normal' || cur.dir === goal.dir)) {
+      goalIdx = curIdx;
+      break;
+    }
+
+    const curStateKey = `${cur.x},${cur.y},${cur.dir}`;
+    if (cur.g > (bestCost.get(curStateKey) ?? Infinity) + 1e-6) continue;
+
+    // 1. Normal 1-tile steps
+    for (const ndir of allDirs) {
+      const { dx, dy } = dirDelta(ndir);
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      if (!canOccupyNormal(nx, ny, ndir)) continue;
+      const turnPenalty = ndir === cur.dir ? 0 : 0.6;
+      const ng = cur.g + 1 + turnPenalty;
+      const nKey = `${nx},${ny},${ndir}`;
+      if (ng < (bestCost.get(nKey) ?? Infinity)) {
+        bestCost.set(nKey, ng);
+        const h = Math.abs(goal.x - nx) + Math.abs(goal.y - ny);
+        const nIdx = nodes.length;
+        nodes.push({
+          x: nx,
+          y: ny,
+          dir: ndir,
+          g: ng,
+          f: ng + h,
+          parentIdx: curIdx,
+          stepType: 'normal',
+        });
+        pushHeap(nIdx);
+      }
+    }
+
+    // 2. Underground belt / pipe-to-ground jumps across perpendicular belts/obstacles
+    if (curIdx !== 0 && !grid.getAt(cur.x, cur.y)) {
+      for (const ndir of allDirs) {
+        const { dx, dy } = dirDelta(ndir);
+        const adjX = cur.x + dx;
+        const adjY = cur.y + dy;
+        const adjEnt = grid.getAt(adjX, adjY);
+        if (!adjEnt) continue; // only jump when there's an obstacle ahead
+        if (adjEnt.kind === 'underground-belt' && (adjEnt.direction % 8) === (ndir % 8)) continue;
+
+        for (let k = 2; k <= maxJump; k++) {
+          const lx = cur.x + k * dx;
+          const ly = cur.y + k * dy;
+          if (lx < bounds.minX || lx > bounds.maxX || ly < bounds.minY || ly > bounds.maxY) break;
+
+          let axisConflict = false;
+          for (let s = 1; s < k; s++) {
+            const mid = grid.getAt(cur.x + s * dx, cur.y + s * dy);
+            if (
+              mid &&
+              (mid.kind === 'underground-belt' || mid.kind === 'pipe-to-ground') &&
+              (mid.direction % 8) === (ndir % 8)
+            ) {
+              axisConflict = true;
+              break;
+            }
+          }
+          if (axisConflict) break;
+
+          if (!grid.getAt(lx, ly)) {
+            const ng = cur.g + 5 + k * 1.4 + (ndir === cur.dir ? 0 : 0.6);
+            const nKey = `${lx},${ly},${ndir}`;
+            if (ng < (bestCost.get(nKey) ?? Infinity)) {
+              bestCost.set(nKey, ng);
+              const h = Math.abs(goal.x - lx) + Math.abs(goal.y - ly);
+              const nIdx = nodes.length;
+              nodes.push({
+                x: lx,
+                y: ly,
+                dir: ndir,
+                g: ng,
+                f: ng + h,
+                parentIdx: curIdx,
+                stepType: 'underground',
+                jumpLen: k,
+              });
+              pushHeap(nIdx);
+            }
+            break; // shortest valid underground exit in this direction
+          }
+        }
+      }
     }
   }
 
-  return finalizeLayout(grid.entities, zones, compactionMode);
+  if (goalIdx === -1) return false;
+
+  // Reconstruct and stamp entities cleanly onto grid
+  const path: PathStep[] = [];
+  let cursor = goalIdx;
+  while (cursor !== -1) {
+    const n = nodes[cursor];
+    path.push({
+      x: n.x,
+      y: n.y,
+      dir: n.dir,
+      type: n.stepType,
+      jumpLen: n.jumpLen,
+    });
+    cursor = n.parentIdx;
+  }
+  path.reverse();
+
+  const lanes =
+    req.kind === 'item'
+      ? { left: req.itemId, right: req.partnerItemId ?? req.itemId }
+      : undefined;
+
+  for (let i = 0; i < path.length; i++) {
+    const step = path[i];
+    const next = path[i + 1];
+    const travelDir = next ? next.dir : goal.dir;
+
+    if (next && next.type === 'underground' && next.jumpLen) {
+      if (req.kind === 'item') {
+        grid.place({
+          kind: 'underground-belt',
+          name: undergroundName,
+          tileX: step.x,
+          tileY: step.y,
+          width: 1,
+          height: 1,
+          direction: next.dir,
+          undergroundType: 'input',
+          beltLanes: lanes,
+        });
+        grid.place({
+          kind: 'underground-belt',
+          name: undergroundName,
+          tileX: next.x,
+          tileY: next.y,
+          width: 1,
+          height: 1,
+          direction: next.dir,
+          undergroundType: 'output',
+          beltLanes: lanes,
+        });
+      } else {
+        grid.place({
+          kind: 'pipe-to-ground',
+          name: 'pipe-to-ground',
+          tileX: step.x,
+          tileY: step.y,
+          width: 1,
+          height: 1,
+          direction: next.dir,
+          undergroundType: 'input',
+          fluidId: req.itemId,
+        });
+        grid.place({
+          kind: 'pipe-to-ground',
+          name: 'pipe-to-ground',
+          tileX: next.x,
+          tileY: next.y,
+          width: 1,
+          height: 1,
+          direction: next.dir,
+          undergroundType: 'output',
+          fluidId: req.itemId,
+        });
+      }
+      i++; // landing tile was placed as output
+    } else {
+      placeFeederTile(grid, step.x, step.y, req, beltName, travelDir);
+    }
+  }
+
+  return true;
 }
 
 function routeBeltStep(
@@ -1155,12 +1761,14 @@ export function computeLayoutStats(
 function finalizeLayout(
   entities: GridEntity[],
   zones: StageZone[],
+  ports: LayoutPortMarker[],
   compactionMode: 'compact' | 'standard'
 ): SynthesizedLayout {
   const { bounds, stats } = computeLayoutStats(entities);
   return {
     entities,
     zones,
+    ports,
     bounds,
     stats,
     compactionMode,

@@ -160,4 +160,50 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     expect(imported.entities.some((e) => e.name === 'electromagnetic-plant')).toBe(true);
     expect(imported.entities.some((e) => e.kind === 'electric-pole')).toBe(true);
   });
+
+  it('emits external input/output port markers and aligns all inputs on the same edge (South or West) without collisions', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'processing-unit', ratePerSec: 0.5 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate', 'plastic-bar', 'sulfuric-acid'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+
+    for (const side of ['south', 'west'] as const) {
+      const layout = synthesizeFactoryLayout(index, solveResult, config, {
+        compactionMode: 'compact',
+        inputSide: side,
+      });
+
+      const inputPorts = layout.ports.filter((p) => p.directionType === 'input');
+      const outputPorts = layout.ports.filter((p) => p.directionType === 'output');
+
+      expect(inputPorts.length).toBeGreaterThanOrEqual(3);
+      expect(outputPorts.length).toBe(1);
+
+      // All external inputs must sit cleanly along the same outer edge coordinate!
+      if (side === 'south') {
+        const ys = new Set(inputPorts.map((p) => p.tileY));
+        expect(ys.size).toBe(1);
+        expect(inputPorts.every((p) => p.side === 'south')).toBe(true);
+      } else {
+        const xs = new Set(inputPorts.map((p) => p.tileX));
+        expect(xs.size).toBe(1);
+        expect(inputPorts.every((p) => p.side === 'west')).toBe(true);
+      }
+
+      // Verify zero tile collisions across all machines, routed belts, undergrounds, and pipes
+      const occupied = new Set<string>();
+      for (const e of layout.entities) {
+        for (let dx = 0; dx < e.width; dx++) {
+          for (let dy = 0; dy < e.height; dy++) {
+            const key = `${e.tileX + dx},${e.tileY + dy}`;
+            expect(occupied.has(key)).toBe(false);
+            occupied.add(key);
+          }
+        }
+      }
+    }
+  });
 });

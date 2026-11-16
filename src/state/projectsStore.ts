@@ -5,7 +5,7 @@
 
 import { DEFAULT_PACK_ID } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit } from '../engine/types.ts';
-import type { GridEntity } from '../spatial/types.ts';
+import type { GridEntity, InputAlignmentSide } from '../spatial/types.ts';
 
 export interface FactoryProject {
   id: string;
@@ -18,6 +18,7 @@ export interface FactoryProject {
     includeBeacons?: boolean;
     includePowerPoles?: boolean;
     directInsertion?: boolean;
+    inputSide?: InputAlignmentSide;
   };
   /** Optional user-edited spatial layout entities (overrides auto-layout until reset) */
   customEntities?: GridEntity[];

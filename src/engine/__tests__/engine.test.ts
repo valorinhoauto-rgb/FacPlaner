@@ -217,4 +217,32 @@ describe('Fase 3 — Factorio Production Calculation Engine', () => {
     expect(result.rawInputs.some((r) => r.itemId === 'kr-imersite')).toBe(true);
     expect(result.rawInputs.some((r) => r.itemId === 'kr-rare-metal-ore')).toBe(true);
   });
+
+  it('builds interactive dependency chains and collapses upstream steps when primary resources are set external', async () => {
+    const { buildTargetChainTree, computeChainPresetOverrides } = await import(
+      '../chainInspector.ts'
+    );
+
+    const baseConfig = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 15 }],
+      defaultBeltId: 'express-transport-belt',
+    };
+
+    const noSmelting = computeChainPresetOverrides(index, baseConfig, 'no-smelting');
+    expect(noSmelting).toContain('iron-plate');
+    expect(noSmelting).toContain('copper-plate');
+
+    const prunedConfig = { ...baseConfig, rawResourceOverrides: noSmelting };
+    const solved = solveProductionPlan(index, prunedConfig);
+    const tree = buildTargetChainTree(index, prunedConfig, solved);
+
+    expect(tree.length).toBe(1);
+    const root = tree[0];
+    expect(root.itemId).toBe('electronic-circuit');
+    const ironNode = root.children.find((c) => c.itemId === 'iron-plate')!;
+    expect(ironNode.isExternalOverride).toBe(true);
+    expect(ironNode.children.length).toBe(0);
+    expect(ironNode.hiddenSubstepsCount).toBeGreaterThanOrEqual(1);
+  });
 });

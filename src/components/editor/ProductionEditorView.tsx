@@ -4,14 +4,14 @@
  */
 
 import React, { useMemo, useState } from 'react';
-import { Columns, Cpu, FlaskConical, GitBranch, Grid, Plus, Trash2 } from 'lucide-react';
+import { Columns, Cpu, FlaskConical, GitBranch, Grid, Layers, Plus, Trash2 } from 'lucide-react';
 import factorioLogo from '../../assets/images/factorio_planner_logo_1794839939049.jpg';
 import { packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
 import type { PlanConfig, RateUnit } from '../../engine/types.ts';
 import { useI18n } from '../../i18n/I18nContext.tsx';
 import { synthesizeFactoryLayout } from '../../spatial/layoutSynthesizer.ts';
-import type { GridEntity } from '../../spatial/types.ts';
+import type { GridEntity, InputAlignmentSide } from '../../spatial/types.ts';
 import {
   RATE_UNIT_MULTIPLIER,
   type FactoryProject,
@@ -20,6 +20,7 @@ import { ResourceIcon } from '../common/ResourceIcon.tsx';
 import { FlowGraphView } from '../graph/FlowGraphView.tsx';
 import { StageInspectorPanel } from '../inspector/StageInspectorPanel.tsx';
 import { BlueprintGridCanvas } from '../spatial/BlueprintGridCanvas.tsx';
+import { ChainScopeModal } from './ChainScopeModal.tsx';
 import { FactorioCraftingPicker } from './FactorioCraftingPicker.tsx';
 import { TechTreeModal } from './TechTreeModal.tsx';
 
@@ -42,6 +43,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const [pickerMode, setPickerMode] = useState<null | 'primary' | 'add'>(null);
   const [techModalOpen, setTechModalOpen] = useState(false);
+  const [chainModalOpen, setChainModalOpen] = useState(false);
   const [dismissedEmptyId, setDismissedEmptyId] = useState<string | null>(null);
 
   const availablePacks = packRegistry.listPacks();
@@ -148,6 +150,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                     }));
                     setSelectedStageId(null);
                     setPickerMode(null);
+                    setChainModalOpen(true);
                   }}
                 />
               </div>
@@ -258,6 +261,27 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               </span>
             )}
           </button>
+
+          {/* Dependency Chain & External Resources Configurator */}
+          {project.config.targets.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setChainModalOpen(true)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded border whitespace-nowrap shrink-0 transition-colors ${
+                (project.config.rawResourceOverrides?.length ?? 0) > 0
+                  ? 'bg-cyan-950/30 border-cyan-500/50 text-cyan-200 hover:border-cyan-400'
+                  : 'bg-[#181E27] border-[#28313E] text-slate-200 hover:border-amber-500/70 hover:text-white'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              <span>{t.editor.chainButton}</span>
+              {(project.config.rawResourceOverrides?.length ?? 0) > 0 && (
+                <span className="font-mono tabular-nums text-cyan-300">
+                  ({project.config.rawResourceOverrides!.length})
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Right Controls: Theoretical vs Real + Dual View Switcher */}
@@ -527,6 +551,29 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
           config={project.config}
           onUpdateConfig={updateConfig}
           onClose={() => setTechModalOpen(false)}
+        />
+      )}
+
+      {chainModalOpen && project.config.targets.length > 0 && (
+        <ChainScopeModal
+          index={index}
+          config={{ ...project.config, packId }}
+          solveResult={solveResult}
+          rateUnit={project.rateUnit}
+          inputSide={project.layoutOptions?.inputSide ?? 'distributed'}
+          onUpdateConfig={updateConfig}
+          onChangeInputSide={(side: InputAlignmentSide) =>
+            onUpdateProject((prev) => ({
+              ...prev,
+              layoutOptions: {
+                ...prev.layoutOptions,
+                inputSide: side,
+              },
+              customEntities: undefined,
+              updatedAt: new Date().toISOString(),
+            }))
+          }
+          onClose={() => setChainModalOpen(false)}
         />
       )}
     </div>

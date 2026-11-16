@@ -75,16 +75,33 @@ export interface SpatialLayoutStats {
   spaceUtilizationPct: number;
 }
 
+export type InputAlignmentSide = 'distributed' | 'south' | 'west';
+
+export interface LayoutPortMarker {
+  id: string;
+  directionType: 'input' | 'output';
+  itemId: string;
+  partnerItemId?: string;
+  kind: 'item' | 'fluid';
+  tileX: number;
+  tileY: number;
+  ratePerSec: number;
+  beltsRequired: number;
+  side: 'south' | 'west' | 'north' | 'east';
+}
+
 export interface LayoutSynthesisOptions {
   compactionMode?: 'compact' | 'standard';
   includeBeacons?: boolean;
   includePowerPoles?: boolean;
   directInsertion?: boolean;
+  inputSide?: InputAlignmentSide;
 }
 
 export interface SynthesizedLayout {
   entities: GridEntity[];
   zones: StageZone[];
+  ports: LayoutPortMarker[];
   bounds: {
     minX: number;
     minY: number;

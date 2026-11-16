@@ -118,6 +118,7 @@ export function buildDependencyGraph(
   const rawItems = new Set<string>();
   const visitedItems = new Set<string>();
 
+  const targetIds = new Set(config.targets.filter((t) => t.ratePerSec > 0).map((t) => t.itemId));
   const expandItem = (itemId: string) => {
     if (visitedItems.has(itemId)) return;
     visitedItems.add(itemId);
@@ -125,7 +126,7 @@ export function buildDependencyGraph(
     const resource = index.resourcesById.get(itemId);
     if (!resource) return;
 
-    if (resource.isRawResource || rawOverrides.has(itemId)) {
+    if (resource.isRawResource || (rawOverrides.has(itemId) && !targetIds.has(itemId))) {
       rawItems.add(itemId);
       return;
     }

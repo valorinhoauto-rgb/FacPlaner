@@ -886,6 +886,190 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         ctx.restore();
       }
 
+      // Draw External Input & Final Output Port Indicators (Train / Main Bus entry markers)
+      const activePorts = (layout.ports ?? []).filter((port) =>
+        entities.some((e) => e.tileX === port.tileX && e.tileY === port.tileY)
+      );
+
+      if (activePorts.length > 0) {
+        const southInputs = activePorts
+          .filter((p) => p.directionType === 'input' && p.side === 'south')
+          .sort((a, b) => a.tileX - b.tileX);
+        const westInputs = activePorts
+          .filter((p) => p.directionType === 'input' && p.side === 'west')
+          .sort((a, b) => a.tileY - b.tileY);
+        const northOutputs = activePorts
+          .filter((p) => p.directionType === 'output')
+          .sort((a, b) => a.tileX - b.tileX);
+
+        const drawPort = (
+          port: (typeof activePorts)[number],
+          staggerRow: number
+        ) => {
+          const isInput = port.directionType === 'input';
+          const color = isInput ? '#22D3EE' : '#F59E0B';
+          const bgFill = isInput ? 'rgba(8, 30, 42, 0.94)' : 'rgba(34, 24, 10, 0.94)';
+          const cx = pan.x + (port.tileX + 0.5) * zoom;
+          const cy = pan.y + (port.tileY + 0.5) * zoom;
+
+          const pulse = animateFlow ? Math.sin(tSec * 4) * Math.min(3, zoom * 0.1) : 0;
+
+          // 1. Highlight frame on the entry/exit tile itself
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = Math.max(1.5, zoom * 0.08);
+          ctx.strokeRect(
+            pan.x + port.tileX * zoom + 1,
+            pan.y + port.tileY * zoom + 1,
+            zoom - 2,
+            zoom - 2
+          );
+
+          // 2. Directional arrow pointing INTO (input) or OUT OF (output) the belt/pipe
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          const aSz = Math.max(5, zoom * 0.34);
+          if (port.side === 'south') {
+            const tipY = pan.y + (port.tileY + 1) * zoom + 3 + pulse;
+            // Point UP into the bottom edge of the belt
+            ctx.moveTo(cx, tipY);
+            ctx.lineTo(cx - aSz * 0.65, tipY + aSz * 0.9);
+            ctx.lineTo(cx + aSz * 0.65, tipY + aSz * 0.9);
+          } else if (port.side === 'west') {
+            const tipX = pan.x + port.tileX * zoom - 3 + pulse;
+            // Point RIGHT into the west edge of the belt
+            ctx.moveTo(tipX, cy);
+            ctx.lineTo(tipX - aSz * 0.9, cy - aSz * 0.65);
+            ctx.lineTo(tipX - aSz * 0.9, cy + aSz * 0.65);
+          } else {
+            const tipY = pan.y + port.tileY * zoom - 12 - pulse;
+            // Point UP out of the north exit belt
+            ctx.moveTo(cx, tipY);
+            ctx.lineTo(cx - aSz * 0.65, tipY + aSz * 0.9);
+            ctx.lineTo(cx + aSz * 0.65, tipY + aSz * 0.9);
+          }
+          ctx.closePath();
+          ctx.fill();
+
+          // 3. Callout Badge with Item Icon + Name + Rate/Belts
+          const res1 = index.resourcesById.get(port.itemId);
+          const res2 = port.partnerItemId
+            ? index.resourcesById.get(port.partnerItemId)
+            : undefined;
+          const img1 = spritePackStore.resolveImage(port.itemId, res1?.iconPath);
+          const img2 = port.partnerItemId
+            ? spritePackStore.resolveImage(port.partnerItemId, res2?.iconPath)
+            : undefined;
+
+          if (zoom < 9) {
+            // Compact dot when heavily zoomed out
+            const dotY =
+              port.side === 'south'
+                ? cy + zoom * 1.15
+                : port.side === 'west'
+                  ? cy
+                  : cy - zoom * 1.15;
+            const dotX = port.side === 'west' ? cx - zoom * 1.15 : cx;
+            ctx.fillStyle = res1?.color ?? color;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            return;
+          }
+
+          const shortName1 = (res1?.name ?? port.itemId).replace(/^K2\s+/i, '');
+          const shortName2 = res2 ? res2.name.replace(/^K2\s+/i, '') : undefined;
+          const title = shortName2 ? `${shortName1} + ${shortName2}` : shortName1;
+          const metric =
+            port.kind === 'fluid'
+              ? `${t.canvas.pipeShort} · ${(port.ratePerSec * 60).toFixed(0)}/m`
+              : `${Math.max(0.1, port.beltsRequired).toFixed(1)} ${t.canvas.beltsShort}`;
+          const tag = isInput ? t.canvas.portIn : t.canvas.portOut;
+          const fullText = `${tag} · ${title} (${metric})`;
+
+          ctx.font = '600 10.5px "Plus Jakarta Sans", sans-serif';
+          const textW = ctx.measureText(fullText).width;
+          const iconSpace = res2 ? 32 : 18;
+          const boxW = textW + iconSpace + 14;
+          const boxH = 20;
+
+          let bx = cx - boxW / 2;
+          let by = cy;
+          if (port.side === 'south') {
+            by = pan.y + (port.tileY + 1) * zoom + 16 + staggerRow * 24;
+            // Dashed leader line down to staggered badge
+            ctx.strokeStyle = isInput ? 'rgba(34, 211, 238, 0.5)' : 'rgba(245, 158, 11, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(cx, pan.y + (port.tileY + 1) * zoom + 8);
+            ctx.lineTo(cx, by);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          } else if (port.side === 'west') {
+            bx = pan.x + port.tileX * zoom - 16 - boxW - staggerRow * 14;
+            by = cy - boxH / 2;
+            ctx.strokeStyle = 'rgba(34, 211, 238, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(pan.x + port.tileX * zoom - 10, cy);
+            ctx.lineTo(bx + boxW, cy);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          } else {
+            by = pan.y + port.tileY * zoom - 16 - boxH - staggerRow * 24;
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(cx, pan.y + port.tileY * zoom - 10);
+            ctx.lineTo(cx, by + boxH);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+
+          ctx.fillStyle = bgFill;
+          ctx.fillRect(bx, by, boxW, boxH);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.25;
+          ctx.strokeRect(bx, by, boxW, boxH);
+
+          // Icons inside badge
+          const drawBadgeIcon = (
+            img: HTMLImageElement | undefined,
+            fallbackColor: string,
+            ix: number,
+            iy: number
+          ) => {
+            if (img) {
+              ctx.drawImage(img, ix, iy, 13, 13);
+            } else {
+              ctx.fillStyle = fallbackColor;
+              ctx.beginPath();
+              ctx.arc(ix + 6.5, iy + 6.5, 5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          };
+
+          drawBadgeIcon(img1, res1?.color ?? color, bx + 5, by + 3.5);
+          if (res2) {
+            drawBadgeIcon(img2, res2.color, bx + 20, by + 3.5);
+          }
+
+          ctx.fillStyle = isInput ? '#CFFAFE' : '#FEF3C7';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(fullText, bx + 6 + iconSpace, by + boxH / 2 + 0.5);
+          ctx.textBaseline = 'alphabetic';
+          ctx.restore();
+        };
+
+        southInputs.forEach((p, idx) => drawPort(p, idx % 3));
+        westInputs.forEach((p, idx) => drawPort(p, idx % 2));
+        northOutputs.forEach((p, idx) => drawPort(p, idx % 2));
+      }
+
       // Hover Tile Ghost / Placement Preview
       if (hoverTile) {
         const hx = pan.x + hoverTile.x * zoom;
@@ -936,12 +1120,17 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     index.pack.electricPoles,
     index.recipesById,
     index.resourcesById,
+    layout.ports,
     layout.zones,
     pan,
     placeDirection,
     selectedEntityNum,
     selectedStageId,
     spriteTick,
+    t.canvas.beltsShort,
+    t.canvas.pipeShort,
+    t.canvas.portIn,
+    t.canvas.portOut,
     tool,
     zoom,
   ]);
@@ -1100,6 +1289,44 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               >
                 {t.canvas.directInsertion}
               </button>
+
+              <div className="inline-flex items-center">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeLayoutOptions({
+                      inputSide:
+                        (layoutOptions?.inputSide ?? 'distributed') === 'distributed'
+                          ? 'south'
+                          : 'distributed',
+                    })
+                  }
+                  title={t.canvas.sameSideTooltip}
+                  className={`px-2.5 py-1.5 text-xs font-medium border whitespace-nowrap transition-colors ${
+                    (layoutOptions?.inputSide ?? 'distributed') !== 'distributed'
+                      ? 'bg-cyan-950/50 border-cyan-500/60 text-cyan-200 rounded-l'
+                      : 'bg-[#1A2029] border-[#28313E] text-slate-300 hover:border-cyan-500/50 hover:text-white rounded'
+                  }`}
+                >
+                  {t.canvas.sameSideInputs}
+                </button>
+                {(layoutOptions?.inputSide ?? 'distributed') !== 'distributed' && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeLayoutOptions({
+                        inputSide: layoutOptions?.inputSide === 'south' ? 'west' : 'south',
+                      })
+                    }
+                    title={t.canvas.sameSideTooltip}
+                    className="px-2 py-1.5 text-xs font-mono font-semibold bg-[#132936] border border-l-0 border-cyan-500/60 text-cyan-300 hover:text-white rounded-r whitespace-nowrap"
+                  >
+                    {layoutOptions?.inputSide === 'west'
+                      ? t.canvas.inputSideWest
+                      : t.canvas.inputSideSouth}
+                  </button>
+                )}
+              </div>
             </>
           )}
 
