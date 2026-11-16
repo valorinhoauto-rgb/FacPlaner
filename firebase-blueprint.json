@@ -1,0 +1,163 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Perfil mínimo do usuário autenticado para vincular esquemáticas salvas.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "ID único do usuário no Firebase Auth."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Nome de exibição público do usuário."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do servidor na criação."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do servidor na última atualização."
+        }
+      },
+      "required": ["uid", "displayName", "createdAt", "updatedAt"]
+    },
+    "SavedSchematic": {
+      "title": "SavedSchematic",
+      "description": "Esquemática industrial compacta: apenas parâmetros básicos de produção, opções de layout e string comprimida opcional (0eN...) caso haja edição manual na grade 2D.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identificador da esquemática."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID do dono da esquemática."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Nome da fábrica/esquemática."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300,
+          "description": "Resumo curto do plano."
+        },
+        "packId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[a-zA-Z0-9_.\\-]+$",
+          "description": "ID do pacote de dados (Vanilla, Space Age, Krastorio 2, etc.)."
+        },
+        "rateUnit": {
+          "type": "string",
+          "enum": ["per_second", "per_minute", "per_hour"],
+          "description": "Unidade de taxa de produção."
+        },
+        "compactionMode": {
+          "type": "string",
+          "enum": ["compact", "standard"],
+          "description": "Modo de compactação do sintetizador espacial."
+        },
+        "targets": {
+          "type": "array",
+          "description": "Lista compacta de metas ({ itemId, ratePerSec }), máximo 12 itens."
+        },
+        "defaultBeltId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "ID da esteira padrão."
+        },
+        "defaultInserterId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "ID do insertor padrão."
+        },
+        "rawResourceOverrides": {
+          "type": "array",
+          "description": "Lista opcional de itens marcados como entrada bruta (Main Bus), máximo 40."
+        },
+        "preferredRecipes": {
+          "type": "object",
+          "description": "Mapa opcional de receitas alternativas selecionadas por item."
+        },
+        "stageOverrides": {
+          "type": "object",
+          "description": "Mapa opcional de ajustes manuais por etapa (máquina, módulos, beacons, trava)."
+        },
+        "researchProductivityBonuses": {
+          "type": "object",
+          "description": "Mapa opcional de níveis de pesquisa infinita de produtividade."
+        },
+        "layoutOptions": {
+          "type": "object",
+          "description": "Opções compactas de layout (beacons, postes, inserção direta)."
+        },
+        "blueprintString": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 32000,
+          "description": "String Factorio 0eN... comprimida em zlib, salva apenas se houver edição manual no canvas 2D."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do servidor na criação."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp do servidor na última atualização."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "name",
+        "description",
+        "packId",
+        "rateUnit",
+        "compactionMode",
+        "targets",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Perfil mínimo do usuário autenticado."
+    },
+    "/users/{userId}/schematics/{schematicId}": {
+      "schema": {
+        "$ref": "#/entities/SavedSchematic"
+      },
+      "description": "Esquemáticas industriais salvas de forma leve por usuário autenticado."
+    }
+  }
+}

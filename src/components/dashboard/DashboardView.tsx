@@ -4,7 +4,19 @@
  */
 
 import React, { useMemo, useRef, useState } from 'react';
-import { Copy, Download, FolderOpen, Plus, Search, Trash2, Upload } from 'lucide-react';
+import {
+  Cloud,
+  CloudUpload,
+  Copy,
+  Download,
+  FolderOpen,
+  HardDrive,
+  LogIn,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import { packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
 import {
@@ -17,6 +29,12 @@ import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
 interface DashboardViewProps {
   projects: FactoryProject[];
+  cloudProjectIds?: Set<string>;
+  userDisplayName?: string | null;
+  isSignedIn?: boolean;
+  isSyncing?: boolean;
+  onSignIn?: () => void;
+  onSaveProjectToCloud?: (project: FactoryProject) => void;
   onOpenProject: (projectId: string) => void;
   onCreateProject: (project: FactoryProject) => void;
   onDuplicateProject: (projectId: string) => void;
@@ -26,6 +44,12 @@ interface DashboardViewProps {
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   projects,
+  cloudProjectIds,
+  userDisplayName,
+  isSignedIn = false,
+  isSyncing = false,
+  onSignIn,
+  onSaveProjectToCloud,
   onOpenProject,
   onCreateProject,
   onDuplicateProject,
@@ -143,6 +167,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
+      {/* Cloud Account Status Strip */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3 bg-[#12161D] border border-[#242C38] rounded-md text-xs">
+        {isSignedIn ? (
+          <>
+            <div className="flex items-center gap-2.5 text-slate-300">
+              <Cloud className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>
+                Conta conectada: <strong className="text-slate-100">{userDisplayName || 'Engenheiro'}</strong> · Esquemáticas salvas de forma enxuta (apenas metas, ajustes e blueprint comprimida).
+              </span>
+            </div>
+            <span className="font-mono text-[11px] text-emerald-400 shrink-0">
+              {isSyncing ? 'Sincronizando...' : 'Nuvem ativa'}
+            </span>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center gap-2.5 text-slate-400">
+              <HardDrive className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                Modo local: suas alterações ficam no navegador. Entre com Google para salvar e acessar suas esquemáticas em qualquer lugar.
+              </span>
+            </div>
+            {onSignIn && (
+              <button
+                type="button"
+                onClick={onSignIn}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-100 bg-[#18202B] border border-[#2D3848] rounded hover:border-amber-500/70 whitespace-nowrap shrink-0"
+              >
+                <LogIn className="w-3.5 h-3.5 text-amber-400" />
+                Entrar com Google
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Saved Projects Section */}
       <section className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -186,6 +246,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const targetRes = primaryTarget ? index.resourcesById.get(primaryTarget.itemId) : undefined;
               const totalMachines = solved.machineTotals.reduce((a, m) => a + m.installedCount, 0);
 
+              const inCloud = Boolean(cloudProjectIds?.has(project.id));
+
               return (
                 <div
                   key={project.id}
@@ -202,9 +264,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             {project.name}
                           </h3>
                           <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                            <span>{pack.name}</span>
+                            <span className="truncate">{pack.name}</span>
                             <span aria-hidden="true">·</span>
-                            <span className="font-mono tabular-nums">
+                            <span className="font-mono tabular-nums shrink-0">
                               {primaryTarget
                                 ? formatRate(primaryTarget.ratePerSec, project.rateUnit)
                                 : '—'}
@@ -212,6 +274,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </div>
                         </div>
                       </div>
+                      <span
+                        title={inCloud ? 'Salvo na nuvem' : 'Salvo localmente'}
+                        className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#0E1319] border border-[#252D3A] text-slate-400 shrink-0"
+                      >
+                        {inCloud ? 'Nuvem' : 'Local'}
+                      </span>
                     </div>
 
                     <p className="text-xs text-slate-400 line-clamp-2">{project.description}</p>
@@ -238,6 +306,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </button>
 
                     <div className="flex items-center gap-1">
+                      {isSignedIn && !inCloud && onSaveProjectToCloud && (
+                        <button
+                          type="button"
+                          title="Enviar para a nuvem"
+                          onClick={() => onSaveProjectToCloud(project)}
+                          className="p-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-[#1E2530] rounded transition-colors"
+                        >
+                          <CloudUpload className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         title="Duplicar"
