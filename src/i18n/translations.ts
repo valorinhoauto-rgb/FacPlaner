@@ -241,6 +241,8 @@ export interface Translations {
     tools: {
       select: string;
       pan: string;
+      moveProduction: string;
+      trainEntrance: string;
       belt: string;
       underground: string;
       splitter: string;
@@ -319,6 +321,49 @@ export interface Translations {
     importModeReplaceDesc: string;
     sampleRailGridBtn: string;
     sampleSubstationGridBtn: string;
+    centerProduction: string;
+    moveProductionHint: string;
+    trainPlannerBtn: string;
+    trainModal: {
+      title: string;
+      subtitle: string;
+      wagonsCount: string;
+      slotsPerWagon: string;
+      placeOnCanvas: string;
+      rotateStation: string;
+      removeStation: string;
+      stationPosLabel: string;
+      notPlaced: string;
+      snapSouth: string;
+      snapWest: string;
+      snapNorth: string;
+      snapEast: string;
+      totalSlots: string;
+      autonomyPerTrain: string;
+      trainsPerMin: string;
+      wagonModeLabel: string;
+      mixedAlertTitle: string;
+      mixedAlertDesc: string;
+      dedicatedOkTitle: string;
+      dedicatedOkDesc: string;
+      colItem: string;
+      colRate: string;
+      colStackSize: string;
+      colSlots: string;
+      colItemsTrain: string;
+      colAutonomy: string;
+      wagonsBreakdownTitle: string;
+      wagonPrefix: string;
+      mixedBadge: string;
+      dedicatedBadge: string;
+      freeSlots: string;
+      itemsUnit: string;
+      slotsUnit: string;
+      fluidsTitle: string;
+      fluidWagonsHint: string;
+      emptyRawInputs: string;
+      close: string;
+    };
   };
   database: {
     title: string;
@@ -788,6 +833,8 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       tools: {
         select: 'Selecionar',
         pan: 'Mover Mapa',
+        moveProduction: 'Mover Produção',
+        trainEntrance: 'Entrada Trem',
         belt: 'Esteira',
         underground: 'Subterrânea',
         splitter: 'Divisor',
@@ -872,6 +919,53 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Carrega as entidades diretamente na grade 2D para inspeção e edição manual sem sintetizador.',
       sampleRailGridBtn: 'Exemplo: City Block 48×48 (Trilhos + Roboport)',
       sampleSubstationGridBtn: 'Exemplo: Grid Subestações 36×36',
+      centerProduction: 'Centralizar',
+      moveProductionHint: 'Arraste no mapa ou use as setas para ajustar a fábrica manualmente',
+      trainPlannerBtn: 'Vagões & Trem',
+      trainModal: {
+        title: 'Estação de Trem & Cálculo de Slots por Vagão',
+        subtitle:
+          'Defina a quantidade de vagões, ajuste o stack de cada item e veja a divisão exata dos slots (incluindo vagões mistos).',
+        wagonsCount: 'Vagões de Carga',
+        slotsPerWagon: 'Slots / Vagão',
+        placeOnCanvas: 'Posicionar na Planta 2D',
+        rotateStation: 'Rotacionar Trem',
+        removeStation: 'Remover Estação',
+        stationPosLabel: 'Posição na grade:',
+        notPlaced: 'Ainda não posicionada na grade',
+        snapSouth: 'Borda Sul',
+        snapWest: 'Borda Oeste',
+        snapNorth: 'Borda Norte',
+        snapEast: 'Borda Leste',
+        totalSlots: 'Slots Totais',
+        autonomyPerTrain: 'Autonomia / Trem',
+        trainsPerMin: 'Trens / Minuto',
+        wagonModeLabel: 'Distribuição',
+        mixedAlertTitle: 'Vagões Mistos Necessários (Mais itens que vagões ou balanceamento fracionado)',
+        mixedAlertDesc:
+          'O filtro por slot do vagão foi calculado proporcionalmente a stacks/s para que todos os itens acabem juntos sem travar a estação.',
+        dedicatedOkTitle: 'Vagões Dedicados / Equilibrados',
+        dedicatedOkDesc:
+          'A capacidade configurada comporta todos os insumos com margem equilibrada de autonomia.',
+        colItem: 'Item de Entrada',
+        colRate: 'Consumo',
+        colStackSize: 'Stack',
+        colSlots: 'Slots',
+        colItemsTrain: 'Itens / Trem',
+        colAutonomy: 'Autonomia',
+        wagonsBreakdownTitle: 'Mapa Visual dos Slots por Vagão (Filtro do Inventário)',
+        wagonPrefix: 'Vagão',
+        mixedBadge: 'Misto',
+        dedicatedBadge: 'Dedicado',
+        freeSlots: 'slots livres',
+        itemsUnit: 'itens',
+        slotsUnit: 'slots',
+        fluidsTitle: 'Entradas de Fluido (Vagões-Tanque)',
+        fluidWagonsHint: 'vagões-tanque/min',
+        emptyRawInputs:
+          'Nenhum insumo sólido ou fluido externo detectado nesta receita ainda. Escolha um produto ou marque etapas como entrada externa na Cadeia.',
+        close: 'Fechar',
+      },
     },
     database: {
       title: 'Banco de Dados, Mods & Assets do Factorio',
@@ -1504,6 +1598,8 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       tools: {
         select: 'Select',
         pan: 'Pan Map',
+        moveProduction: 'Move Factory',
+        trainEntrance: 'Train Entrance',
         belt: 'Belt',
         underground: 'Underground',
         splitter: 'Splitter',
@@ -1587,6 +1683,53 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         'Loads blueprint entities directly onto the 2D canvas for manual inspection and editing.',
       sampleRailGridBtn: 'Sample: 48×48 Rail City Block',
       sampleSubstationGridBtn: 'Sample: 36×36 Substation Grid',
+      centerProduction: 'Center',
+      moveProductionHint: 'Drag on grid or use arrows to fine-tune factory position',
+      trainPlannerBtn: 'Train & Wagons',
+      trainModal: {
+        title: 'Train Entrance & Cargo Wagon Slot Calculator',
+        subtitle:
+          'Set cargo wagon count, customize stack size per item, and calculate exact inventory slot filters (including mixed wagons).',
+        wagonsCount: 'Cargo Wagons',
+        slotsPerWagon: 'Slots / Wagon',
+        placeOnCanvas: 'Place on 2D Grid',
+        rotateStation: 'Rotate Train',
+        removeStation: 'Remove Station',
+        stationPosLabel: 'Grid position:',
+        notPlaced: 'Not placed on grid yet',
+        snapSouth: 'South Edge',
+        snapWest: 'West Edge',
+        snapNorth: 'North Edge',
+        snapEast: 'East Edge',
+        totalSlots: 'Total Slots',
+        autonomyPerTrain: 'Autonomy / Train',
+        trainsPerMin: 'Trains / Min',
+        wagonModeLabel: 'Allocation',
+        mixedAlertTitle: 'Mixed Wagons Required (More items than wagons or fractional balance)',
+        mixedAlertDesc:
+          'Per-slot wagon filters are weighted by stacks/s so every item drains evenly without starving the station.',
+        dedicatedOkTitle: 'Balanced / Dedicated Wagons',
+        dedicatedOkDesc:
+          'Configured cargo capacity fits all required inputs with synchronized autonomy.',
+        colItem: 'Input Item',
+        colRate: 'Consumption',
+        colStackSize: 'Stack',
+        colSlots: 'Slots',
+        colItemsTrain: 'Items / Train',
+        colAutonomy: 'Autonomy',
+        wagonsBreakdownTitle: 'Visual Wagon Slot Map (Inventory Filter)',
+        wagonPrefix: 'Wagon',
+        mixedBadge: 'Mixed',
+        dedicatedBadge: 'Dedicated',
+        freeSlots: 'free slots',
+        itemsUnit: 'items',
+        slotsUnit: 'slots',
+        fluidsTitle: 'Fluid Inputs (Fluid Wagons)',
+        fluidWagonsHint: 'fluid wagons/min',
+        emptyRawInputs:
+          'No external solid or fluid inputs detected yet. Choose a target product or mark upstream stages as external inputs in Chain & Inputs.',
+        close: 'Close',
+      },
     },
     database: {
       title: 'Factorio Database, Mods & Assets',

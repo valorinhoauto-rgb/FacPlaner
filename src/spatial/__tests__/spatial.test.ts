@@ -261,4 +261,130 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
       expect(reDecoded.blueprint.entities.length).toBe(layout.entities.length);
     }
   });
+
+  it('centers production inside large frames with sparse outer poles and supports manual productionOffsetX/Y', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 7.5 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+
+    const centered = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: parsedFrame.entities,
+    });
+    const shifted = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: parsedFrame.entities,
+      productionOffsetX: 3,
+      productionOffsetY: -2,
+    });
+
+    const ib = centered.gridFitReport!.interiorBounds;
+    const frameMidX = (ib.minX + ib.maxX) / 2;
+    const prodEntitiesCentered = centered.entities.filter((e) => !e.isGridFrame);
+    const prodMinX = Math.min(...prodEntitiesCentered.map((e) => e.tileX));
+    const prodMaxX = Math.max(...prodEntitiesCentered.map((e) => e.tileX + e.width));
+    const prodMidX = (prodMinX + prodMaxX) / 2;
+
+    // Centered horizontally within 4 tiles of the interior center
+    expect(Math.abs(prodMidX - frameMidX)).toBeLessThanOrEqual(4);
+
+    // Shifted layout translates cleanly
+    const prodEntitiesShifted = shifted.entities.filter((e) => !e.isGridFrame);
+    const shiftedMinX = Math.min(...prodEntitiesShifted.map((e) => e.tileX));
+    expect(shiftedMinX).toBeGreaterThanOrEqual(prodMinX);
+  });
+
+  it('preserves Factorio 2.0 16-way rail directions and 4x16 rail-ramp footprints on import/export', async () => {
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Elevated Rail 2.0',
+        version: 562949956632576,
+        entities: [
+          { entity_number: 1, name: 'half-diagonal-rail', position: { x: 2, y: 2 }, direction: 3 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 8, y: 4 }, direction: 7 },
+          { entity_number: 3, name: 'rail-ramp', position: { x: 20, y: 8 }, direction: 0 },
+          { entity_number: 4, name: 'rail-support', position: { x: 26, y: 8 }, direction: 0 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const jsonBytes = new TextEncoder().encode(JSON.stringify(bpJson));
+    const compressed = zlib.deflate(jsonBytes);
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const halfDiag = parsed.entities.find((e) => e.name === 'half-diagonal-rail');
+    const curved = parsed.entities.find((e) => e.name === 'curved-rail-a');
+    const ramp = parsed.entities.find((e) => e.name === 'rail-ramp');
+    const support = parsed.entities.find((e) => e.name === 'rail-support');
+
+    expect(halfDiag?.rawDirection).toBe(3);
+    expect(curved?.rawDirection).toBe(7);
+    expect(curved?.width).toBe(4);
+    expect(curved?.height).toBe(4);
+    expect(ramp?.width).toBe(4);
+    expect(ramp?.height).toBe(16);
+    expect(support?.width).toBe(3);
+    expect(support?.height).toBe(3);
+
+    const reEncoded = encodeBlueprintString(parsed.entities, 'Elevated Rail 2.0');
+    const reDecoded = decodeBlueprintString(reEncoded);
+    expect(reDecoded.blueprint.entities.find((e) => e.name === 'half-diagonal-rail')?.direction).toBe(3);
+    expect(reDecoded.blueprint.entities.find((e) => e.name === 'curved-rail-a')?.direction).toBe(7);
+  });
+
+  it('computes Train Cargo Wagon slot allocations including mixed wagons and stack size overrides', async () => {
+    const { computeTrainWagonPlan } = await import('../trainPlanner.ts');
+    const rawInputs = [
+      { itemId: 'iron-plate', kind: 'item' as const, totalRatePerSec: 30, beltsRequired: 1 },
+      { itemId: 'copper-plate', kind: 'item' as const, totalRatePerSec: 15, beltsRequired: 0.5 },
+      { itemId: 'plastic-bar', kind: 'item' as const, totalRatePerSec: 15, beltsRequired: 0.5 },
+      { itemId: 'petroleum-gas', kind: 'fluid' as const, totalRatePerSec: 100, beltsRequired: 0 },
+    ];
+
+    // 3 solid items into 2 wagons (80 slots total) -> MUST trigger mixed wagons
+    const mixedPlan = computeTrainWagonPlan(rawInputs, index, {
+      wagonCount: 2,
+      slotsPerWagon: 40,
+      stackSizeOverrides: {
+        'iron-plate': 100,
+        'copper-plate': 100,
+        'plastic-bar': 100,
+      },
+    });
+
+    expect(mixedPlan.totalSlots).toBe(80);
+    expect(mixedPlan.requiresMixedWagons).toBe(true);
+    expect(mixedPlan.wagons.some((w) => w.isMixed)).toBe(true);
+    const totalAllocated = mixedPlan.itemAllocations.reduce((s, a) => s + a.allocatedSlots, 0);
+    expect(totalAllocated).toBe(80);
+
+    // Iron consumes 2x Copper/Plastic at same stackSize -> ~2x slots (~40 vs ~20 vs ~20)
+    const ironAlloc = mixedPlan.itemAllocations.find((a) => a.itemId === 'iron-plate')!;
+    const copperAlloc = mixedPlan.itemAllocations.find((a) => a.itemId === 'copper-plate')!;
+    expect(ironAlloc.allocatedSlots).toBe(40);
+    expect(copperAlloc.allocatedSlots).toBe(20);
+    expect(mixedPlan.fluids.length).toBe(1);
+
+    // Custom stack size override (e.g. stack 50 for plastic doubles its required slot share)
+    const customStackPlan = computeTrainWagonPlan(rawInputs, index, {
+      wagonCount: 2,
+      slotsPerWagon: 40,
+      stackSizeOverrides: {
+        'iron-plate': 100,
+        'copper-plate': 100,
+        'plastic-bar': 50,
+      },
+    });
+    const plasticCustom = customStackPlan.itemAllocations.find((a) => a.itemId === 'plastic-bar')!;
+    expect(plasticCustom.allocatedSlots).toBeGreaterThan(20);
+  });
 });

@@ -5,18 +5,25 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   Check,
   Copy,
+  Crosshair,
   Download,
   Eraser,
   Hand,
   Maximize,
   MousePointer2,
+  Move,
   Pause,
   Play,
   RefreshCw,
   RotateCw,
   Share2,
+  TrainFront,
   X,
   ZoomIn,
   ZoomOut,
@@ -29,6 +36,7 @@ import type {
   GridEntityKind,
   LayoutSynthesisOptions,
   SynthesizedLayout,
+  TrainStationConfig,
 } from '../../spatial/types.ts';
 import {
   buildBlueprintJson,
@@ -38,10 +46,14 @@ import {
   parseBlueprintToEntities,
 } from '../../spatial/blueprintCodec.ts';
 import { computeLayoutStats } from '../../spatial/layoutSynthesizer.ts';
+import { computeTrainWagonPlan, type TrainRawInputEntry } from '../../spatial/trainPlanner.ts';
+import { TrainPlannerModal } from './TrainPlannerModal.tsx';
 
 type EditorTool =
   | 'select'
   | 'pan'
+  | 'move-production'
+  | 'place-train-station'
   | 'place-belt'
   | 'place-underground'
   | 'place-splitter'
@@ -61,6 +73,8 @@ interface BlueprintGridCanvasProps {
   compactionMode: 'compact' | 'standard';
   layoutOptions?: LayoutSynthesisOptions;
   hasGridFrame?: boolean;
+  rawInputs?: TrainRawInputEntry[];
+  trainStation?: TrainStationConfig;
   selectedStageId: string | null;
   onSelectStage: (stageId: string | null) => void;
   onChangeEntities: (next: GridEntity[]) => void;
@@ -69,6 +83,7 @@ interface BlueprintGridCanvasProps {
   onResetAutoLayout: () => void;
   onToggleCompaction: (mode: 'compact' | 'standard') => void;
   onChangeLayoutOptions?: (patch: Partial<LayoutSynthesisOptions>) => void;
+  onChangeTrainStation?: (next: TrainStationConfig | undefined) => void;
 }
 
 function rotateDir(dir: Direction): Direction {
@@ -101,6 +116,8 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   compactionMode,
   layoutOptions,
   hasGridFrame,
+  rawInputs = [],
+  trainStation,
   selectedStageId,
   onSelectStage,
   onChangeEntities,
@@ -109,6 +126,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   onResetAutoLayout,
   onToggleCompaction,
   onChangeLayoutOptions,
+  onChangeTrainStation,
 }) => {
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -120,6 +138,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [hoverTile, setHoverTile] = useState<{ x: number; y: number } | null>(null);
   const [animateFlow, setAnimateFlow] = useState(true);
   const [spriteTick, setSpriteTick] = useState(0);
+  const [moveProdPreviewDelta, setMoveProdPreviewDelta] = useState<{ dx: number; dy: number } | null>(
+    null
+  );
 
   const [zoom, setZoom] = useState(26); // pixels per Factorio tile
   const [pan, setPan] = useState({ x: 300, y: 400 });
@@ -132,13 +153,14 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [importMode, setImportMode] = useState<'grid-frame' | 'replace'>('grid-frame');
   const [importText, setImportText] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [trainModalOpen, setTrainModalOpen] = useState(false);
 
   useEffect(() => {
     return spritePackStore.subscribe(() => setSpriteTick((t) => t + 1));
   }, []);
 
   const dragStateRef = useRef<{
-    mode: 'none' | 'pan' | 'move-entity';
+    mode: 'none' | 'pan' | 'move-entity' | 'move-production';
     startScreenX: number;
     startScreenY: number;
     startPanX: number;
@@ -150,6 +172,15 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
   const liveStats = useMemo(() => computeLayoutStats(entities), [entities]);
 
+  const trainPlan = useMemo(() => {
+    if (!trainStation) return null;
+    return computeTrainWagonPlan(rawInputs, index, {
+      wagonCount: trainStation.wagonCount,
+      slotsPerWagon: trainStation.slotsPerWagon ?? 40,
+      stackSizeOverrides: trainStation.stackSizeOverrides,
+    });
+  }, [rawInputs, index, trainStation]);
+
   const selectedEntity = useMemo(
     () => entities.find((e) => e.entityNumber === selectedEntityNum) ?? null,
     [entities, selectedEntityNum]
@@ -160,9 +191,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     if (!el || entities.length === 0) return;
     const rect = el.getBoundingClientRect();
     const { minX, minY, maxX, maxY } = liveStats.bounds;
-    const w = Math.max(4, maxX - minX + 4);
-    const h = Math.max(4, maxY - minY + 4);
-    const nextZoom = Math.max(8, Math.min(48, Math.min(rect.width / w, rect.height / h)));
+    const w = Math.max(4, maxX - minX + 6);
+    const h = Math.max(4, maxY - minY + 6);
+    const nextZoom = Math.max(1.2, Math.min(48, Math.min(rect.width / w, rect.height / h)));
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
     setZoom(nextZoom);
@@ -172,10 +203,32 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     });
   }, [entities.length, liveStats.bounds]);
 
-  // Fit on initial layout change
+  // Fit on initial layout change (wait only when layout itself changes meaningfully)
   useEffect(() => {
     fitToView();
   }, [layout]);
+
+  const nudgeProduction = useCallback(
+    (dx: number, dy: number) => {
+      if (!onChangeLayoutOptions) return;
+      onChangeLayoutOptions({
+        productionOffsetX: (layoutOptions?.productionOffsetX ?? 0) + dx,
+        productionOffsetY: (layoutOptions?.productionOffsetY ?? 0) + dy,
+      });
+    },
+    [onChangeLayoutOptions, layoutOptions?.productionOffsetX, layoutOptions?.productionOffsetY]
+  );
+
+  const centerProduction = useCallback(() => {
+    if (onChangeLayoutOptions) {
+      onChangeLayoutOptions({
+        productionOffsetX: 0,
+        productionOffsetY: 0,
+      });
+    } else {
+      onResetAutoLayout();
+    }
+  }, [onChangeLayoutOptions, onResetAutoLayout]);
 
   const screenToTile = useCallback(
     (clientX: number, clientY: number) => {
@@ -269,6 +322,31 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         startPanX: pan.x,
         startPanY: pan.y,
       };
+      return;
+    }
+
+    if (tool === 'move-production') {
+      dragStateRef.current = {
+        mode: 'move-production',
+        startScreenX: e.clientX,
+        startScreenY: e.clientY,
+        startPanX: pan.x,
+        startPanY: pan.y,
+      };
+      setMoveProdPreviewDelta({ dx: 0, dy: 0 });
+      return;
+    }
+
+    if (tool === 'place-train-station' && onChangeTrainStation) {
+      onChangeTrainStation({
+        tileX: tile.x,
+        tileY: tile.y,
+        direction: placeDirection,
+        wagonCount: trainStation?.wagonCount ?? 2,
+        slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
+        stackSizeOverrides: trainStation?.stackSizeOverrides ?? {},
+      });
+      setTool('select');
       return;
     }
 
@@ -387,6 +465,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         x: ds.startPanX + (e.clientX - ds.startScreenX),
         y: ds.startPanY + (e.clientY - ds.startScreenY),
       });
+    } else if (ds.mode === 'move-production') {
+      const dx = Math.round((e.clientX - ds.startScreenX) / zoom);
+      const dy = Math.round((e.clientY - ds.startScreenY) / zoom);
+      setMoveProdPreviewDelta({ dx, dy });
     } else if (ds.mode === 'move-entity' && ds.entityNum !== undefined) {
       const dxTiles = Math.round((e.clientX - ds.startScreenX) / zoom);
       const dyTiles = Math.round((e.clientY - ds.startScreenY) / zoom);
@@ -408,6 +490,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   };
 
   const handleMouseUp = () => {
+    if (dragStateRef.current.mode === 'move-production' && moveProdPreviewDelta) {
+      if (moveProdPreviewDelta.dx !== 0 || moveProdPreviewDelta.dy !== 0) {
+        nudgeProduction(moveProdPreviewDelta.dx, moveProdPreviewDelta.dy);
+      }
+      setMoveProdPreviewDelta(null);
+    }
     dragStateRef.current.mode = 'none';
   };
 
@@ -420,7 +508,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     const my = e.clientY - rect.top;
 
     const factor = e.deltaY < 0 ? 1.12 : 0.89;
-    const nextZoom = Math.max(7, Math.min(64, zoom * factor));
+    const nextZoom = Math.max(1.2, Math.min(64, zoom * factor));
     const scaleRatio = nextZoom / zoom;
 
     setPan({
@@ -469,12 +557,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       const startTileY = Math.floor(-pan.y / zoom) - 2;
       const endTileY = Math.ceil((height - pan.y) / zoom) + 2;
 
-      // Draw subtle tile grid
+      // Draw subtle tile grid (or 32-tile chunk grid when zoomed out)
       if (zoom >= 10) {
         ctx.lineWidth = 1;
         for (let tx = startTileX; tx <= endTileX; tx++) {
           const sx = Math.floor(pan.x + tx * zoom) + 0.5;
-          ctx.strokeStyle = tx % 5 === 0 ? '#23262C' : '#181A1F';
+          ctx.strokeStyle = tx % 32 === 0 ? '#2E3440' : tx % 5 === 0 ? '#23262C' : '#181A1F';
           ctx.beginPath();
           ctx.moveTo(sx, 0);
           ctx.lineTo(sx, height);
@@ -482,7 +570,26 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         }
         for (let ty = startTileY; ty <= endTileY; ty++) {
           const sy = Math.floor(pan.y + ty * zoom) + 0.5;
-          ctx.strokeStyle = ty % 5 === 0 ? '#23262C' : '#181A1F';
+          ctx.strokeStyle = ty % 32 === 0 ? '#2E3440' : ty % 5 === 0 ? '#23262C' : '#181A1F';
+          ctx.beginPath();
+          ctx.moveTo(0, sy);
+          ctx.lineTo(width, sy);
+          ctx.stroke();
+        }
+      } else if (zoom >= 1.5) {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#1E222A';
+        const firstChunkX = Math.floor(startTileX / 32) * 32;
+        for (let tx = firstChunkX; tx <= endTileX; tx += 32) {
+          const sx = Math.floor(pan.x + tx * zoom) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(sx, 0);
+          ctx.lineTo(sx, height);
+          ctx.stroke();
+        }
+        const firstChunkY = Math.floor(startTileY / 32) * 32;
+        for (let ty = firstChunkY; ty <= endTileY; ty += 32) {
+          const sy = Math.floor(pan.y + ty * zoom) + 0.5;
           ctx.beginPath();
           ctx.moveTo(0, sy);
           ctx.lineTo(width, sy);
@@ -531,19 +638,26 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         }
       }
 
-      // Draw Entities with Viewport Culling
+      // Draw Entities with Viewport Culling (apply live drag offset preview to production entities)
       for (const ent of entities) {
+        const previewShiftX =
+          moveProdPreviewDelta && !ent.isGridFrame ? moveProdPreviewDelta.dx : 0;
+        const previewShiftY =
+          moveProdPreviewDelta && !ent.isGridFrame ? moveProdPreviewDelta.dy : 0;
+        const drawTileX = ent.tileX + previewShiftX;
+        const drawTileY = ent.tileY + previewShiftY;
+
         if (
-          ent.tileX + ent.width < startTileX ||
-          ent.tileX > endTileX ||
-          ent.tileY + ent.height < startTileY ||
-          ent.tileY > endTileY
+          drawTileX + ent.width < startTileX ||
+          drawTileX > endTileX ||
+          drawTileY + ent.height < startTileY ||
+          drawTileY > endTileY
         ) {
           continue;
         }
 
-        const x = pan.x + ent.tileX * zoom;
-        const y = pan.y + ent.tileY * zoom;
+        const x = pan.x + drawTileX * zoom;
+        const y = pan.y + drawTileY * zoom;
         const w = ent.width * zoom;
         const h = ent.height * zoom;
         const isSelected = selectedEntityNum === ent.entityNumber;
@@ -890,30 +1004,141 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             });
           }
         } else if (ent.kind === 'grid-obstacle') {
-          const obsImg = spritePackStore.resolveImage(ent.name);
+          const rawDir = ent.rawDirection ?? ent.direction ?? 0;
+          const isElevated = ent.name.includes('elevated');
+          const isRailOrStop =
+            ent.name.includes('rail') || ent.name.includes('train-stop');
+          const obsImg = isRailOrStop ? undefined : spritePackStore.resolveImage(ent.name);
+
           if (obsImg) {
             ctx.drawImage(obsImg, x + 1, y + 1, w - 2, h - 2);
-          } else if (ent.name.includes('rail')) {
-            // Rail ties + twin steel rails
-            ctx.fillStyle = '#1E1B18';
+          } else if (ent.name.includes('rail-support')) {
+            // Elevated rail concrete & steel bridge pylon
+            ctx.fillStyle = '#252B36';
+            ctx.fillRect(x + w * 0.14, y + h * 0.14, w * 0.72, h * 0.72);
+            ctx.strokeStyle = '#64748B';
+            ctx.lineWidth = Math.max(1.2, zoom * 0.08);
+            ctx.strokeRect(x + w * 0.14, y + h * 0.14, w * 0.72, h * 0.72);
+            ctx.fillStyle = '#475569';
+            ctx.fillRect(x + w * 0.28, y + h * 0.28, w * 0.44, h * 0.44);
+          } else if (ent.name.includes('rail-ramp')) {
+            // 4×16 or 16×4 Factorio 2.0 Rail Ramp
+            const horiz = rawDir === 4 || rawDir === 12;
+            ctx.fillStyle = '#1D222B';
             ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-            const horiz = ent.direction === 4 || ent.direction === 12;
-            ctx.fillStyle = '#574232';
+            ctx.strokeStyle = '#64748B';
+            ctx.lineWidth = Math.max(1.2, zoom * 0.08);
+            ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+
+            const steps = 8;
+            ctx.fillStyle = '#4E3B2C';
             if (horiz) {
-              for (let tx = 0.15; tx < 0.9; tx += 0.28) {
-                ctx.fillRect(x + w * tx, y + h * 0.12, Math.max(2, w * 0.12), h * 0.76);
+              for (let s = 0; s < steps; s++) {
+                ctx.fillRect(x + (w / steps) * (s + 0.2), y + h * 0.18, Math.max(1.5, w * 0.04), h * 0.64);
               }
-              ctx.fillStyle = '#94A3B8';
-              ctx.fillRect(x, y + h * 0.24, w, Math.max(1.5, h * 0.09));
-              ctx.fillRect(x, y + h * 0.67, w, Math.max(1.5, h * 0.09));
+              ctx.fillStyle = '#CBD5E1';
+              ctx.fillRect(x, y + h * 0.28, w, Math.max(1.5, zoom * 0.14));
+              ctx.fillRect(x, y + h * 0.68, w, Math.max(1.5, zoom * 0.14));
             } else {
-              for (let ty = 0.15; ty < 0.9; ty += 0.28) {
-                ctx.fillRect(x + w * 0.12, y + h * ty, w * 0.76, Math.max(2, h * 0.12));
+              for (let s = 0; s < steps; s++) {
+                ctx.fillRect(x + w * 0.18, y + (h / steps) * (s + 0.2), w * 0.64, Math.max(1.5, h * 0.04));
               }
-              ctx.fillStyle = '#94A3B8';
-              ctx.fillRect(x + w * 0.24, y, Math.max(1.5, w * 0.09), h);
-              ctx.fillRect(x + w * 0.67, y, Math.max(1.5, w * 0.09), h);
+              ctx.fillStyle = '#CBD5E1';
+              ctx.fillRect(x + w * 0.28, y, Math.max(1.5, zoom * 0.14), h);
+              ctx.fillRect(x + w * 0.68, y, Math.max(1.5, zoom * 0.14), h);
             }
+          } else if (ent.name.includes('rail-signal')) {
+            const cx = x + w / 2;
+            const cy = y + h / 2;
+            const isChain = ent.name.includes('chain');
+            ctx.fillStyle = '#1F242D';
+            ctx.beginPath();
+            ctx.arc(cx, cy, Math.max(2.5, Math.min(w, h) * 0.36), 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = isChain ? '#38BDF8' : '#22C55E';
+            ctx.beginPath();
+            ctx.arc(cx, cy, Math.max(1.5, Math.min(w, h) * 0.2), 0, Math.PI * 2);
+            ctx.fill();
+          } else if (ent.name.includes('train-stop')) {
+            ctx.fillStyle = '#451A1A';
+            ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+            ctx.strokeStyle = '#EF4444';
+            ctx.lineWidth = Math.max(1.4, zoom * 0.1);
+            ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+            ctx.fillStyle = '#FCA5A5';
+            ctx.beginPath();
+            ctx.arc(x + w / 2, y + h / 2, Math.max(2, Math.min(w, h) * 0.22), 0, Math.PI * 2);
+            ctx.fill();
+          } else if (ent.name.includes('rail')) {
+            // Crisp 16-way vector rail rendering (straight, half-diagonal, curved-rail-a/b, elevated)
+            const cx = x + w / 2;
+            const cy = y + h / 2;
+            const angle = (rawDir / 16) * Math.PI * 2;
+            const isCurved = ent.name.includes('curved-rail');
+            const isHalfDiag = ent.name.includes('half-diagonal');
+
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate(angle);
+
+            if (isElevated) {
+              // Subtle viaduct deck shadow & parapet
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+              const deckW = zoom * (isCurved ? 3.2 : 2.1);
+              const deckH = isCurved ? h * 0.96 : h * 1.02;
+              ctx.fillRect(-deckW / 2, -deckH / 2, deckW, deckH);
+              ctx.strokeStyle = 'rgba(100, 116, 139, 0.45)';
+              ctx.lineWidth = Math.max(1, zoom * 0.06);
+              ctx.strokeRect(-deckW / 2, -deckH / 2, deckW, deckH);
+            }
+
+            if (isCurved) {
+              // Smooth Factorio curved rail arc across 4x4 footprint
+              const curveSign = rawDir % 2 === 0 ? 1 : -1;
+              const r = zoom * 2.1;
+              const span = h * 0.48;
+              ctx.strokeStyle = '#574232';
+              ctx.lineWidth = Math.max(1.5, zoom * 0.18);
+              for (let t = -0.75; t <= 0.76; t += 0.375) {
+                const py = t * span;
+                const px = curveSign * (t * t) * zoom * 0.45;
+                ctx.beginPath();
+                ctx.moveTo(px - zoom * 0.65, py);
+                ctx.lineTo(px + zoom * 0.65, py);
+                ctx.stroke();
+              }
+              const gauge = zoom * 0.48;
+              ctx.strokeStyle = isElevated ? '#CBD5E1' : '#94A3B8';
+              ctx.lineWidth = Math.max(1.2, zoom * 0.12);
+              for (const gOff of [-gauge, gauge]) {
+                ctx.beginPath();
+                ctx.moveTo(gOff, -span);
+                ctx.quadraticCurveTo(gOff + curveSign * r * 0.25, 0, gOff + curveSign * zoom * 0.75, span);
+                ctx.stroke();
+              }
+            } else {
+              // Straight or half-diagonal rail
+              const halfLen = isHalfDiag ? zoom * 1.15 : zoom * 1.05;
+              const tieLen = zoom * 0.68;
+              const gauge = zoom * 0.46;
+              ctx.strokeStyle = '#574232';
+              ctx.lineWidth = Math.max(1.4, zoom * 0.16);
+              for (const ty of [-0.65, 0, 0.65]) {
+                ctx.beginPath();
+                ctx.moveTo(-tieLen, ty * zoom);
+                ctx.lineTo(tieLen, ty * zoom);
+                ctx.stroke();
+              }
+              ctx.strokeStyle = isElevated ? '#CBD5E1' : '#94A3B8';
+              ctx.lineWidth = Math.max(1.2, zoom * 0.12);
+              ctx.beginPath();
+              ctx.moveTo(-gauge, -halfLen);
+              ctx.lineTo(-gauge, halfLen);
+              ctx.moveTo(gauge, -halfLen);
+              ctx.lineTo(gauge, halfLen);
+              ctx.stroke();
+            }
+            ctx.restore();
           } else if (ent.name.includes('roboport')) {
             ctx.fillStyle = '#29221A';
             ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
@@ -936,12 +1161,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
             ctx.strokeStyle = '#38BDF8';
             ctx.lineWidth = 1;
-            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
-          } else if (ent.name.includes('train-stop')) {
-            ctx.fillStyle = '#451A1A';
-            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
-            ctx.strokeStyle = '#EF4444';
-            ctx.lineWidth = 1.5;
             ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
           } else {
             ctx.fillStyle = '#262932';
@@ -1169,11 +1388,166 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         northOutputs.forEach((p, idx) => drawPort(p, idx % 2));
       }
 
+      // Draw Configured Train Entrance Station & Cargo Wagon Slot Slices
+      const drawTrainAssembly = (
+        stationX: number,
+        stationY: number,
+        stationDir: Direction,
+        wagonCount: number,
+        isGhost: boolean
+      ) => {
+        ctx.save();
+        if (isGhost) ctx.globalAlpha = 0.6;
+
+        // Car step vector pointing backward behind the locomotive
+        // dir 0=N (wagons go South +Y), 4=E (wagons go West -X), 8=S (wagons go North -Y), 12=W (wagons go East +X)
+        const horiz = stationDir === 4 || stationDir === 12;
+        const stepX = stationDir === 4 ? -7 : stationDir === 12 ? 7 : 0;
+        const stepY = stationDir === 0 ? 7 : stationDir === 8 ? -7 : 0;
+        const carW = horiz ? 6 * zoom : 2 * zoom;
+        const carH = horiz ? 2 * zoom : 6 * zoom;
+
+        // Underline rail track beneath whole train
+        const totalCars = 1 + wagonCount;
+        const endCenterX = stationX + stepX * (totalCars - 1);
+        const endCenterY = stationY + stepY * (totalCars - 1);
+        const sx1 = pan.x + (stationX + 1) * zoom;
+        const sy1 = pan.y + (stationY + 1) * zoom;
+        const sx2 = pan.x + (endCenterX + 1) * zoom;
+        const sy2 = pan.y + (endCenterY + 1) * zoom;
+
+        ctx.strokeStyle = '#64748B';
+        ctx.lineWidth = Math.max(2, zoom * 0.25);
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1);
+        ctx.lineTo(sx2, sy2);
+        ctx.stroke();
+
+        // Draw Locomotive at index 0
+        const locoLeft = pan.x + (stationX - (horiz ? 2 : 0)) * zoom;
+        const locoTop = pan.y + (stationY - (horiz ? 0 : 2)) * zoom;
+        ctx.fillStyle = '#991B1B';
+        ctx.fillRect(locoLeft, locoTop, carW, carH);
+        ctx.strokeStyle = '#F87171';
+        ctx.lineWidth = Math.max(1.5, zoom * 0.08);
+        ctx.strokeRect(locoLeft, locoTop, carW, carH);
+
+        // Headlight cone
+        ctx.fillStyle = 'rgba(253, 224, 71, 0.28)';
+        ctx.beginPath();
+        const headX =
+          stationDir === 4
+            ? locoLeft + carW
+            : stationDir === 12
+              ? locoLeft
+              : locoLeft + carW / 2;
+        const headY =
+          stationDir === 0
+            ? locoTop
+            : stationDir === 8
+              ? locoTop + carH
+              : locoTop + carH / 2;
+        ctx.arc(headX, headY, Math.max(3, zoom * 0.45), 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw Cargo Wagons (1..wagonCount) with Proportional Item Slot Color Bars
+        for (let wi = 0; wi < wagonCount; wi++) {
+          const cxTile = stationX + stepX * (wi + 1);
+          const cyTile = stationY + stepY * (wi + 1);
+          const wLeft = pan.x + (cxTile - (horiz ? 2 : 0)) * zoom;
+          const wTop = pan.y + (cyTile - (horiz ? 0 : 2)) * zoom;
+
+          ctx.fillStyle = '#1E242E';
+          ctx.fillRect(wLeft, wTop, carW, carH);
+
+          const wPlan = trainPlan?.wagons[wi];
+          if (wPlan && wPlan.slices.length > 0 && wPlan.totalSlots > 0) {
+            let offsetRatio = 0;
+            for (const sl of wPlan.slices) {
+              const frac = sl.slots / wPlan.totalSlots;
+              ctx.fillStyle = sl.color;
+              if (horiz) {
+                ctx.fillRect(
+                  wLeft + 2 + offsetRatio * (carW - 4),
+                  wTop + 3,
+                  Math.max(2, frac * (carW - 4)),
+                  carH - 6
+                );
+              } else {
+                ctx.fillRect(
+                  wLeft + 3,
+                  wTop + 2 + offsetRatio * (carH - 4),
+                  carW - 6,
+                  Math.max(2, frac * (carH - 4))
+                );
+              }
+              offsetRatio += frac;
+            }
+          }
+
+          ctx.strokeStyle = wPlan?.isMixed ? '#F59E0B' : '#22D3EE';
+          ctx.lineWidth = Math.max(1.4, zoom * 0.08);
+          ctx.strokeRect(wLeft, wTop, carW, carH);
+
+          if (zoom >= 6) {
+            ctx.fillStyle = '#0B0D12';
+            ctx.font = `700 ${Math.max(8, Math.min(13, zoom * 0.45))}px "JetBrains Mono", monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`#${wi + 1}`, wLeft + carW / 2, wTop + carH / 2);
+            ctx.textAlign = 'start';
+            ctx.textBaseline = 'alphabetic';
+          }
+        }
+
+        // Station Banner above locomotive
+        if (!isGhost) {
+          const badgeText = trainPlan
+            ? `🚂 ${wagonCount}× ${t.canvas.trainModal.wagonPrefix} · ${
+                trainPlan.requiresMixedWagons
+                  ? t.canvas.trainModal.mixedBadge
+                  : t.canvas.trainModal.dedicatedBadge
+              }`
+            : `🚂 ${wagonCount}×`;
+          ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
+          const tw = ctx.measureText(badgeText).width + 14;
+          const bx = locoLeft + carW / 2 - tw / 2;
+          const by = locoTop - 26;
+          ctx.fillStyle = 'rgba(17, 24, 39, 0.92)';
+          ctx.fillRect(bx, by, tw, 20);
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 1.2;
+          ctx.strokeRect(bx, by, tw, 20);
+          ctx.fillStyle = '#FDE68A';
+          ctx.fillText(badgeText, bx + 7, by + 13.5);
+        }
+
+        ctx.restore();
+      };
+
+      if (trainStation) {
+        drawTrainAssembly(
+          trainStation.tileX,
+          trainStation.tileY,
+          trainStation.direction,
+          trainStation.wagonCount,
+          false
+        );
+      }
+
       // Hover Tile Ghost / Placement Preview
       if (hoverTile) {
         const hx = pan.x + hoverTile.x * zoom;
         const hy = pan.y + hoverTile.y * zoom;
-        if (tool.startsWith('place-')) {
+        if (tool === 'place-train-station') {
+          drawTrainAssembly(
+            hoverTile.x,
+            hoverTile.y,
+            placeDirection,
+            trainStation?.wagonCount ?? 2,
+            true
+          );
+        } else if (tool.startsWith('place-')) {
           const isSplitter = tool === 'place-splitter';
           const isBeacon = tool === 'place-beacon';
           const gw = isBeacon
@@ -1219,8 +1593,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     index.pack.electricPoles,
     index.recipesById,
     index.resourcesById,
+    layout.gridFitReport,
     layout.ports,
     layout.zones,
+    moveProdPreviewDelta,
     pan,
     placeDirection,
     selectedEntityNum,
@@ -1230,7 +1606,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     t.canvas.pipeShort,
     t.canvas.portIn,
     t.canvas.portOut,
+    t.canvas.trainModal.dedicatedBadge,
+    t.canvas.trainModal.mixedBadge,
+    t.canvas.trainModal.wagonPrefix,
     tool,
+    trainPlan,
+    trainStation,
     zoom,
   ]);
 
@@ -1281,9 +1662,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       if (el) {
         const rect = el.getBoundingClientRect();
         const { bounds } = computeLayoutStats(parsed.entities);
-        const w = Math.max(4, bounds.maxX - bounds.minX + 4);
-        const h = Math.max(4, bounds.maxY - bounds.minY + 4);
-        const nextZoom = Math.max(8, Math.min(48, Math.min(rect.width / w, rect.height / h)));
+        const w = Math.max(4, bounds.maxX - bounds.minX + 6);
+        const h = Math.max(4, bounds.maxY - bounds.minY + 6);
+        const nextZoom = Math.max(1.2, Math.min(48, Math.min(rect.width / w, rect.height / h)));
         const centerX = (bounds.minX + bounds.maxX) / 2;
         const centerY = (bounds.minY + bounds.maxY) / 2;
         setZoom(nextZoom);
@@ -1305,6 +1686,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           {[
             { id: 'select', label: t.canvas.tools.select, icon: MousePointer2 },
             { id: 'pan', label: t.canvas.tools.pan, icon: Hand },
+            ...(onChangeLayoutOptions
+              ? [{ id: 'move-production', label: t.canvas.tools.moveProduction, icon: Move }]
+              : []),
+            ...(onChangeTrainStation
+              ? [{ id: 'place-train-station', label: t.canvas.tools.trainEntrance, icon: TrainFront }]
+              : []),
             { id: 'place-belt', label: t.canvas.tools.belt },
             { id: 'place-underground', label: t.canvas.tools.underground },
             { id: 'place-splitter', label: t.canvas.tools.splitter },
@@ -1478,6 +1865,26 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             </div>
           )}
 
+          {onChangeTrainStation && (
+            <button
+              type="button"
+              onClick={() => setTrainModalOpen(true)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded border whitespace-nowrap transition-colors ${
+                trainStation
+                  ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 hover:bg-amber-500/25'
+                  : 'bg-[#1A2029] border-[#28313E] text-slate-200 hover:border-amber-500/60 hover:text-white'
+              }`}
+            >
+              <TrainFront className="w-3.5 h-3.5 text-amber-400" />
+              <span>{t.canvas.trainPlannerBtn}</span>
+              {trainPlan && (
+                <span className="font-mono text-[11px] text-cyan-300">
+                  ({trainPlan.wagonCount}v)
+                </span>
+              )}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => {
@@ -1551,6 +1958,71 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           </div>
         )}
 
+        {/* Floating Move Production Nudge & Center HUD */}
+        {(tool === 'move-production' ||
+          (layoutOptions?.productionOffsetX ?? 0) !== 0 ||
+          (layoutOptions?.productionOffsetY ?? 0) !== 0) &&
+          onChangeLayoutOptions && (
+            <div className="absolute top-3 right-3 flex flex-col gap-2 p-2.5 bg-[#141920]/95 border border-amber-500/45 rounded-md shadow-xl text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-semibold text-amber-300 flex items-center gap-1.5">
+                  <Move className="w-3.5 h-3.5" />
+                  {t.canvas.tools.moveProduction}
+                </span>
+                <span className="font-mono text-[11px] text-slate-400">
+                  ({layoutOptions?.productionOffsetX ?? 0}, {layoutOptions?.productionOffsetY ?? 0})
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 max-w-[210px] leading-snug">
+                {t.canvas.moveProductionHint}
+              </div>
+              <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={(e) => nudgeProduction(e.shiftKey ? -5 : -1, 0)}
+                    className="p-1.5 bg-[#1D222B] border border-[#32363E] rounded text-slate-200 hover:border-amber-500/70"
+                    title="← 1 tile (Shift: 5)"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => nudgeProduction(0, e.shiftKey ? -5 : -1)}
+                    className="p-1.5 bg-[#1D222B] border border-[#32363E] rounded text-slate-200 hover:border-amber-500/70"
+                    title="↑ 1 tile (Shift: 5)"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => nudgeProduction(0, e.shiftKey ? 5 : 1)}
+                    className="p-1.5 bg-[#1D222B] border border-[#32363E] rounded text-slate-200 hover:border-amber-500/70"
+                    title="↓ 1 tile (Shift: 5)"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => nudgeProduction(e.shiftKey ? 5 : 1, 0)}
+                    className="p-1.5 bg-[#1D222B] border border-[#32363E] rounded text-slate-200 hover:border-amber-500/70"
+                    title="→ 1 tile (Shift: 5)"
+                  >
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={centerProduction}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold bg-cyan-500/20 border border-cyan-500/50 text-cyan-200 rounded hover:bg-cyan-500/30"
+                >
+                  <Crosshair className="w-3 h-3" />
+                  {t.canvas.centerProduction}
+                </button>
+              </div>
+            </div>
+          )}
+
         {/* Zoom & Animation Controls */}
         <div className="absolute bottom-3 right-3 flex items-center gap-1 p-1 bg-[#141920] border border-[#262F3D] rounded-md">
           <button
@@ -1564,7 +2036,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           <button
             type="button"
             title={t.canvas.zoomOut}
-            onClick={() => setZoom((z) => Math.max(7, z * 0.85))}
+            onClick={() => setZoom((z) => Math.max(1.2, z * 0.85))}
             className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
           >
             <ZoomOut className="w-3.5 h-3.5" />
@@ -1798,6 +2270,19 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Train Entrance & Wagon Slot Calculator Modal */}
+      {trainModalOpen && onChangeTrainStation && (
+        <TrainPlannerModal
+          index={index}
+          rawInputs={rawInputs}
+          trainStation={trainStation}
+          gridBounds={liveStats.bounds}
+          onChangeTrainStation={onChangeTrainStation}
+          onPickOnCanvas={() => setTool('place-train-station')}
+          onClose={() => setTrainModalOpen(false)}
+        />
       )}
     </div>
   );

@@ -28,8 +28,10 @@ export interface GridEntity {
   /** Footprint in tiles */
   width: number;
   height: number;
-  /** Factorio 2.0 orientation: 0=North, 4=East, 8=South, 12=West */
+  /** Factorio 2.0 cardinal orientation: 0=North, 4=East, 8=South, 12=West */
   direction: Direction;
+  /** Full 16-way Factorio direction (0..15) preserved for diagonal/curved rails and ramps */
+  rawDirection?: number;
   /** Recipe assigned to machine */
   recipeId?: string;
   /** Linked calculation stage ID */
@@ -93,9 +95,16 @@ export interface LayoutPortMarker {
   side: 'south' | 'west' | 'north' | 'east';
 }
 
+export interface GridBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 export interface GridFitReport {
   hasGridFrame: boolean;
-  interiorBounds: { minX: number; minY: number; maxX: number; maxY: number };
+  interiorBounds: GridBounds;
   interiorWidth: number;
   interiorHeight: number;
   frameEntityCount: number;
@@ -112,20 +121,27 @@ export interface LayoutSynthesisOptions {
   includePowerPoles?: boolean;
   directInsertion?: boolean;
   inputSide?: InputAlignmentSide;
+  /** Manual tile offset relative to centered alignment */
+  productionOffsetX?: number;
+  productionOffsetY?: number;
   /** Optional external grid blueprint entities (rails, roboports, substations, walls, etc.) to fit production inside */
   gridFrame?: GridEntity[];
+}
+
+export interface TrainStationConfig {
+  tileX: number;
+  tileY: number;
+  direction: Direction;
+  wagonCount: number;
+  slotsPerWagon: number;
+  stackSizeOverrides?: Record<string, number>;
 }
 
 export interface SynthesizedLayout {
   entities: GridEntity[];
   zones: StageZone[];
   ports: LayoutPortMarker[];
-  bounds: {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-  };
+  bounds: GridBounds;
   stats: SpatialLayoutStats;
   compactionMode: 'compact' | 'standard';
   gridFitReport?: GridFitReport;

@@ -134,10 +134,11 @@ interface InteriorBounds {
 }
 
 /**
- * Analyzes ANY imported Factorio grid model (rail city block, walled box,
- * substation grid, roboport grid, asymmetric unloading station, etc.) and
- * automatically extracts the buildable interior rectangle while isolating
- * interior poles/roboports to be routed around.
+ * Analyzes ANY imported Factorio grid model (rail city block, elevated railway grid,
+ * walled box, substation grid, roboport grid, asymmetric unloading station, etc.) and
+ * locates the largest unobstructed central build rectangle using a center-biased
+ * Maximum Empty Rectangle scan over hard structural barriers (rails, ramps, stops, walls).
+ * Interior poles/roboports stay inside so production automatically routes around them.
  */
 function detectGridInterior(
   grid: OccupancyGrid,
@@ -147,94 +148,114 @@ function detectGridInterior(
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
+  let hardBarrierCount = 0;
+
+  const isHardBarrier = (ent: GridEntity): boolean =>
+    ent.name.includes('rail') ||
+    ent.name.includes('wall') ||
+    ent.name.includes('gate') ||
+    ent.name.includes('train-stop') ||
+    ent.name.includes('turret') ||
+    ent.name.includes('cargo-landing-pad');
 
   for (const e of frameEntities) {
     minX = Math.min(minX, e.tileX);
     minY = Math.min(minY, e.tileY);
     maxX = Math.max(maxX, e.tileX + e.width);
     maxY = Math.max(maxY, e.tileY + e.height);
+    if (isHardBarrier(e)) hardBarrierCount++;
   }
 
   const totalW = Math.max(1, maxX - minX);
   const totalH = Math.max(1, maxY - minY);
 
-  // If user imported a tiny or open substation-only grid without dense walls, keep full bounds minus 1 tile if needed
-  const isBorderBandBlocked = (
-    fixedCoord: number,
-    isHorizontalRow: boolean,
-    from: number,
-    to: number
-  ): boolean => {
-    const span = Math.max(1, to - from);
-    let blocked = 0;
-    let railOrWallHits = 0;
-    for (let v = from; v < to; v++) {
-      const ent = isHorizontalRow ? grid.getAt(v, fixedCoord) : grid.getAt(fixedCoord, v);
-      if (ent) {
-        blocked++;
-        if (
-          ent.name.includes('rail') ||
-          ent.name.includes('wall') ||
-          ent.name.includes('gate') ||
-          ent.name.includes('train-stop') ||
-          ent.name.includes('turret')
-        ) {
-          railOrWallHits++;
-        }
+  // Open substation/roboport grid without rail/wall perimeter: use full frame minus 1-tile edge margin
+  if (hardBarrierCount < 4 || totalW < 12 || totalH < 12) {
+    return {
+      minX: minX + 1,
+      minY: minY + 1,
+      maxX: Math.max(minX + 9, maxX - 1),
+      maxY: Math.max(minY + 9, maxY - 1),
+    };
+  }
+
+  // Downsample 2x only for colossal megabase frames (>400x400) so histogram scan stays <3ms
+  const scale = totalW > 380 || totalH > 380 ? 2 : 1;
+  const gw = Math.ceil(totalW / scale);
+  const gh = Math.ceil(totalH / scale);
+  const blocked = new Uint8Array(gw * gh);
+
+  for (const e of frameEntities) {
+    if (!isHardBarrier(e)) continue;
+    const x0 = Math.max(0, Math.floor((e.tileX - minX) / scale));
+    const x1 = Math.min(gw, Math.ceil((e.tileX + e.width - minX) / scale));
+    const y0 = Math.max(0, Math.floor((e.tileY - minY) / scale));
+    const y1 = Math.min(gh, Math.ceil((e.tileY + e.height - minY) / scale));
+    for (let gy = y0; gy < y1; gy++) {
+      const rowOffset = gy * gw;
+      for (let gx = x0; gx < x1; gx++) {
+        blocked[rowOffset + gx] = 1;
       }
     }
-    // Trim edge row/column when border-structure density >= 22% or generic obstacle density >= 45%
-    return railOrWallHits / span >= 0.22 || blocked / span >= 0.45;
-  };
-
-  let intMinX = minX;
-  let intMaxX = maxX;
-  let intMinY = minY;
-  let intMaxY = maxY;
-
-  const maxTrimX = Math.floor(totalW * 0.35);
-  const maxTrimY = Math.floor(totalH * 0.35);
-
-  while (intMinX - minX < maxTrimX && intMaxX - intMinX > 12 && isBorderBandBlocked(intMinX, false, intMinY, intMaxY)) {
-    intMinX++;
-  }
-  while (maxX - intMaxX < maxTrimX && intMaxX - intMinX > 12 && isBorderBandBlocked(intMaxX - 1, false, intMinY, intMaxY)) {
-    intMaxX--;
-  }
-  while (intMinY - minY < maxTrimY && intMaxY - intMinY > 12 && isBorderBandBlocked(intMinY, true, intMinX, intMaxX)) {
-    intMinY++;
-  }
-  while (maxY - intMaxY < maxTrimY && intMaxY - intMinY > 12 && isBorderBandBlocked(intMaxY - 1, true, intMinX, intMaxX)) {
-    intMaxY--;
   }
 
-  // Check if any side still has an asymmetric inner station/loader band (>= 30% occupied within 4 tiles)
-  const trimAsymmetricSide = () => {
-    const rowOccupiedRatio = (y: number) => {
-      let occ = 0;
-      const w = Math.max(1, intMaxX - intMinX);
-      for (let x = intMinX; x < intMaxX; x++) {
-        if (grid.getAt(x, y)) occ++;
+  const heights = new Int32Array(gw);
+  let bestScore = -1;
+  let bestRect = { x1: 0, y1: 0, x2: gw, y2: gh };
+  const halfW = gw / 2;
+  const halfH = gh / 2;
+
+  for (let y = 0; y < gh; y++) {
+    const rowOffset = y * gw;
+    for (let x = 0; x < gw; x++) {
+      heights[x] = blocked[rowOffset + x] ? 0 : heights[x] + 1;
+    }
+
+    const stack: number[] = [];
+    for (let x = 0; x <= gw; x++) {
+      const h = x === gw ? 0 : heights[x];
+      while (stack.length > 0 && heights[stack[stack.length - 1]] > h) {
+        const topIdx = stack.pop()!;
+        const rectH = heights[topIdx];
+        const leftX = stack.length === 0 ? 0 : stack[stack.length - 1] + 1;
+        const rectW = x - leftX;
+        const worldW = rectW * scale;
+        const worldH = rectH * scale;
+        if (worldW < 8 || worldH < 8) continue;
+
+        const rectY1 = y - rectH + 1;
+        const cx = (leftX + x) / 2;
+        const cy = (rectY1 + y + 1) / 2;
+        const normDist = Math.hypot((cx - halfW) / gw, (cy - halfH) / gh);
+        const aspect = Math.min(worldW, worldH) / Math.max(worldW, worldH);
+        const centerWeight = Math.max(0.15, 1.4 - normDist * 1.6);
+        const score = worldW * worldH * centerWeight * (0.7 + 0.3 * aspect);
+        if (score > bestScore) {
+          bestScore = score;
+          bestRect = { x1: leftX, y1: rectY1, x2: x, y2: y + 1 };
+        }
       }
-      return occ / w;
-    };
-    const colOccupiedRatio = (x: number) => {
-      let occ = 0;
-      const h = Math.max(1, intMaxY - intMinY);
-      for (let y = intMinY; y < intMaxY; y++) {
-        if (grid.getAt(x, y)) occ++;
-      }
-      return occ / h;
-    };
+      stack.push(x);
+    }
+  }
 
-    while (intMaxY - intMinY > 14 && rowOccupiedRatio(intMinY) >= 0.35) intMinY++;
-    while (intMaxY - intMinY > 14 && rowOccupiedRatio(intMaxY - 1) >= 0.35) intMaxY--;
-    while (intMaxX - intMinX > 14 && colOccupiedRatio(intMinX) >= 0.35) intMinX++;
-    while (intMaxX - intMinX > 14 && colOccupiedRatio(intMaxX - 1) >= 0.35) intMaxX--;
-  };
-  trimAsymmetricSide();
+  let intMinX = minX + bestRect.x1 * scale;
+  let intMaxX = Math.min(maxX, minX + bestRect.x2 * scale);
+  let intMinY = minY + bestRect.y1 * scale;
+  let intMaxY = Math.min(maxY, minY + bestRect.y2 * scale);
 
-  // Leave a tiny 1-tile safety clearance if a wall/rail sits immediately outside trimmed edge
+  // Leave a clean 1-tile safety clearance inside rail ties / walls when spacious
+  if (intMaxX - intMinX >= 20) {
+    intMinX += 1;
+    intMaxX -= 1;
+  }
+  if (intMaxY - intMinY >= 20) {
+    intMinY += 1;
+    intMaxY -= 1;
+  }
+
+  // Fallback check if grid had unexpected sparse blockers
+  void grid;
   return {
     minX: intMinX,
     minY: intMinY,
@@ -454,6 +475,8 @@ export function synthesizeFactoryLayout(
           includePowerPoles: true,
           directInsertion: false,
           inputSide: 'distributed',
+          productionOffsetX: 0,
+          productionOffsetY: 0,
           gridFrame: undefined,
         }
       : {
@@ -462,6 +485,8 @@ export function synthesizeFactoryLayout(
           includePowerPoles: modeOrOptions.includePowerPoles ?? true,
           directInsertion: modeOrOptions.directInsertion ?? false,
           inputSide: modeOrOptions.inputSide ?? 'distributed',
+          productionOffsetX: Math.round(modeOrOptions.productionOffsetX ?? 0),
+          productionOffsetY: Math.round(modeOrOptions.productionOffsetY ?? 0),
           gridFrame: modeOrOptions.gridFrame,
         };
 
@@ -585,146 +610,193 @@ export function synthesizeFactoryLayout(
   const availInteriorW = interiorBounds ? Math.max(8, safeMaxX - safeMinX) : Infinity;
   const availInteriorH = interiorBounds ? Math.max(8, safeMaxY - safeMinY) : Infinity;
 
-  let currentBaseY = interiorBounds ? safeMaxY : 0;
-  let shelfX = interiorBounds ? safeMinX : 0;
-  let maxShelfHeight = 0;
+  const buildBlockPlan = (stage: SolvedStage) => {
+    const machine = index.machinesById.get(stage.machineId)!;
+    const requestedStageCount = stage.installedMachines;
+    totalRequestedMachines += requestedStageCount;
+    const count = interiorBounds
+      ? requestedStageCount
+      : Math.min(requestedStageCount, MAX_UNBOUNDED_MACHINES_PER_STAGE);
 
-  for (const layerIdx of sortedLayers) {
-    const layerStages = layersMap.get(layerIdx)!;
-    let currentX = interiorBounds ? shelfX : 0;
-    let maxLayerHeight = 0;
+    const directPair = directFeederForStage.get(stage.id);
+    const feederMachine = directPair
+      ? index.machinesById.get(directPair.feeder.machineId)
+      : undefined;
 
-    const blockPlans = layerStages.map((stage) => {
-      const machine = index.machinesById.get(stage.machineId)!;
-      const requestedStageCount = stage.installedMachines;
-      totalRequestedMachines += requestedStageCount;
-      const count = interiorBounds
-        ? requestedStageCount
-        : Math.min(requestedStageCount, MAX_UNBOUNDED_MACHINES_PER_STAGE);
+    const hasFluid =
+      stage.inputs.some((i) => i.kind === 'fluid') ||
+      stage.outputs.some((o) => o.kind === 'fluid');
 
-      const directPair = directFeederForStage.get(stage.id);
-      const feederMachine = directPair
-        ? index.machinesById.get(directPair.feeder.machineId)
-        : undefined;
+    const inputTracks = packSolidInputBelts(stage, beltThroughput, directPair?.itemId);
+    const feederTracks = directPair
+      ? packSolidInputBelts(directPair.feeder, beltThroughput)
+      : [];
+    const fluidInputs = stage.inputs.filter((i) => i.kind === 'fluid');
+    const fluidOutputs = stage.outputs.filter((o) => o.kind === 'fluid');
 
-      const hasFluid =
-        stage.inputs.some((i) => i.kind === 'fluid') ||
-        stage.outputs.some((o) => o.kind === 'fluid');
+    const hasBeacons = options.includeBeacons && (stage.beacon?.count ?? 0) > 0;
+    const beaconDef = hasBeacons
+      ? index.beaconsById.get(stage.beacon!.beaconId) ?? index.pack.beacons[0]
+      : undefined;
+    const beaconStripW = beaconDef ? beaconDef.tileSize.width + 1 : 0;
 
-      const inputTracks = packSolidInputBelts(stage, beltThroughput, directPair?.itemId);
-      const feederTracks = directPair
-        ? packSolidInputBelts(directPair.feeder, beltThroughput)
-        : [];
-      const fluidInputs = stage.inputs.filter((i) => i.kind === 'fluid');
-      const fluidOutputs = stage.outputs.filter((o) => o.kind === 'fluid');
-
-      const hasBeacons = options.includeBeacons && (stage.beacon?.count ?? 0) > 0;
-      const beaconDef = hasBeacons
-        ? index.beaconsById.get(stage.beacon!.beaconId) ?? index.pack.beacons[0]
-        : undefined;
-      const beaconStripW = beaconDef ? beaconDef.tileSize.width + 1 : 0;
-
-      const leftTracks = Math.min(2, inputTracks.length);
-      const rightInputTracks = inputTracks.length > 2 ? 1 : 0;
-      const leftCorridorW = leftTracks > 0 ? leftTracks + 2 : 0;
-      const rightInputW = rightInputTracks > 0 ? rightInputTracks + 2 : 0;
-      const fluidW =
-        fluidInputs.length > 1
-          ? fluidInputs.length + 1
-          : fluidInputs.length > 0 || fluidOutputs.length > 0
-            ? 2
-            : 0;
-
-      const feederUnitW =
-        directPair && feederMachine
-          ? feederMachine.tileSize.width + 1 + (feederTracks.length > 0 ? feederTracks.length + 2 : 0)
+    const leftTracks = Math.min(2, inputTracks.length);
+    const rightInputTracks = inputTracks.length > 2 ? 1 : 0;
+    const leftCorridorW = leftTracks > 0 ? leftTracks + 2 : 0;
+    const rightInputW = rightInputTracks > 0 ? rightInputTracks + 2 : 0;
+    const fluidW =
+      fluidInputs.length > 1
+        ? fluidInputs.length + 1
+        : fluidInputs.length > 0 || fluidOutputs.length > 0
+          ? 2
           : 0;
 
-      const mW = machine.tileSize.width;
-      const mH = machine.tileSize.height;
-      const rowStepY = Math.max(
-        mH + (hasFluid ? 1 : 0),
-        feederMachine ? feederMachine.tileSize.height : mH
+    const feederUnitW =
+      directPair && feederMachine
+        ? feederMachine.tileSize.width + 1 + (feederTracks.length > 0 ? feederTracks.length + 2 : 0)
+        : 0;
+
+    const mW = machine.tileSize.width;
+    const mH = machine.tileSize.height;
+    const rowStepY = Math.max(
+      mH + (hasFluid ? 1 : 0),
+      feederMachine ? feederMachine.tileSize.height : mH
+    );
+
+    // Fold column height automatically when constrained inside an imported grid height!
+    const maxPerColUnbounded = compactionMode === 'compact' ? 10 : 8;
+    const maxRowsByGridHeight = interiorBounds
+      ? Math.max(1, Math.floor(availInteriorH / rowStepY))
+      : maxPerColUnbounded;
+
+    const useTwinColumns =
+      !directPair &&
+      count >= 6 &&
+      !hasFluid &&
+      machine.tileSize.width <= 3 &&
+      (!interiorBounds || Math.ceil(count / 2) <= maxRowsByGridHeight);
+
+    let cols = useTwinColumns
+      ? 2
+      : interiorBounds
+        ? Math.max(1, Math.ceil(count / Math.min(maxPerColUnbounded, maxRowsByGridHeight)))
+        : Math.min(4, Math.max(1, Math.ceil(count / maxPerColUnbounded)));
+
+    const colGap = useTwinColumns ? 3 : 4 + feederUnitW;
+    const fixedW =
+      beaconStripW +
+      leftCorridorW +
+      fluidW +
+      feederUnitW +
+      (useTwinColumns ? 0 : 3) +
+      rightInputW;
+
+    // Clamp column count so block width fits inside the imported grid interior width!
+    if (interiorBounds && !useTwinColumns && cols > 1) {
+      const maxColsFittingW = Math.max(
+        1,
+        Math.floor((availInteriorW - fixedW + colGap) / (mW + colGap))
       );
-
-      // Fold column height automatically when constrained inside an imported grid height!
-      const maxPerColUnbounded = compactionMode === 'compact' ? 10 : 8;
-      const maxRowsByGridHeight = interiorBounds
-        ? Math.max(1, Math.floor(availInteriorH / rowStepY))
-        : maxPerColUnbounded;
-
-      const useTwinColumns =
-        !directPair &&
-        count >= 6 &&
-        !hasFluid &&
-        machine.tileSize.width <= 3 &&
-        (!interiorBounds || Math.ceil(count / 2) <= maxRowsByGridHeight);
-
-      let cols = useTwinColumns
-        ? 2
-        : interiorBounds
-          ? Math.max(1, Math.ceil(count / Math.min(maxPerColUnbounded, maxRowsByGridHeight)))
-          : Math.min(4, Math.max(1, Math.ceil(count / maxPerColUnbounded)));
-
-      const colGap = useTwinColumns ? 3 : 4 + feederUnitW;
-      const fixedW =
-        beaconStripW +
-        leftCorridorW +
-        fluidW +
-        feederUnitW +
-        (useTwinColumns ? 0 : 3) +
-        rightInputW;
-
-      // Clamp column count so block width fits inside the imported grid interior width!
-      if (interiorBounds && !useTwinColumns && cols > 1) {
-        const maxColsFittingW = Math.max(
-          1,
-          Math.floor((availInteriorW - fixedW + colGap) / (mW + colGap))
-        );
-        cols = Math.min(cols, maxColsFittingW);
-      }
-
-      const rows = interiorBounds
-        ? Math.min(maxRowsByGridHeight, Math.ceil(count / cols))
-        : Math.ceil(count / cols);
-
-      const blockW =
-        fixedW + cols * mW + Math.max(0, cols - 1) * colGap;
-
-      const blockH = Math.max(mH, rows * rowStepY - (hasFluid ? 1 : 0));
-
-      return {
-        stage,
-        machine,
-        count,
-        directPair,
-        feederMachine,
-        feederTracks,
-        feederUnitW,
-        useTwinColumns,
-        cols,
-        rows,
-        rowStepY,
-        inputTracks,
-        fluidInputs,
-        fluidOutputs,
-        beaconStripW,
-        beaconDef,
-        leftCorridorW,
-        fluidW,
-        colGap,
-        blockW,
-        blockH,
-      };
-    });
-
-    if (!interiorBounds) {
-      for (const bp of blockPlans) {
-        maxLayerHeight = Math.max(maxLayerHeight, bp.blockH);
-      }
+      cols = Math.min(cols, maxColsFittingW);
     }
 
-    for (const bp of blockPlans) {
+    const rows = interiorBounds
+      ? Math.min(maxRowsByGridHeight, Math.ceil(count / cols))
+      : Math.ceil(count / cols);
+
+    const blockW = fixedW + cols * mW + Math.max(0, cols - 1) * colGap;
+    const blockH = Math.max(mH, rows * rowStepY - (hasFluid ? 1 : 0));
+
+    return {
+      stage,
+      machine,
+      count,
+      directPair,
+      feederMachine,
+      feederTracks,
+      feederUnitW,
+      useTwinColumns,
+      cols,
+      rows,
+      rowStepY,
+      inputTracks,
+      fluidInputs,
+      fluidOutputs,
+      beaconStripW,
+      beaconDef,
+      leftCorridorW,
+      fluidW,
+      colGap,
+      blockW,
+      blockH,
+    };
+  };
+
+  type BlockPlan = ReturnType<typeof buildBlockPlan>;
+  const shelves: Array<{ items: BlockPlan[]; totalW: number; maxH: number }> = [];
+
+  for (const layerIdx of sortedLayers) {
+    const layerPlans = layersMap.get(layerIdx)!.map(buildBlockPlan);
+    let currentShelf: { items: BlockPlan[]; totalW: number; maxH: number } = {
+      items: [],
+      totalW: 0,
+      maxH: 0,
+    };
+
+    for (const bp of layerPlans) {
+      const nextW =
+        currentShelf.items.length > 0
+          ? currentShelf.totalW + blockGapX + bp.blockW
+          : bp.blockW;
+      if (interiorBounds && currentShelf.items.length > 0 && nextW > availInteriorW) {
+        shelves.push(currentShelf);
+        currentShelf = { items: [bp], totalW: bp.blockW, maxH: bp.blockH };
+      } else {
+        currentShelf.items.push(bp);
+        currentShelf.totalW = nextW;
+        currentShelf.maxH = Math.max(currentShelf.maxH, bp.blockH);
+      }
+    }
+    if (currentShelf.items.length > 0) {
+      shelves.push(currentShelf);
+    }
+  }
+
+  const totalFactoryH =
+    shelves.reduce((sum, s) => sum + s.maxH, 0) +
+    Math.max(0, shelves.length - 1) * layerGapY;
+  const maxShelfW = shelves.reduce((m, s) => Math.max(m, s.totalW), 0);
+
+  let currentBaseY: number;
+  if (interiorBounds) {
+    const interiorCenterY = Math.round((safeMinY + safeMaxY) / 2);
+    const idealBaseY = Math.round(interiorCenterY + totalFactoryH / 2);
+    const minValidBaseY = safeMinY + Math.min(availInteriorH, totalFactoryH);
+    const clampedBaseY = Math.max(minValidBaseY, Math.min(safeMaxY, idealBaseY));
+    currentBaseY = Math.max(
+      minValidBaseY,
+      Math.min(safeMaxY, clampedBaseY + options.productionOffsetY)
+    );
+  } else {
+    currentBaseY = options.productionOffsetY;
+  }
+
+  for (const shelf of shelves) {
+    let currentX: number;
+    if (interiorBounds) {
+      const interiorCenterX = Math.round((safeMinX + safeMaxX) / 2);
+      const idealStartX = Math.round(interiorCenterX - shelf.totalW / 2);
+      const maxValidStartX = Math.max(safeMinX, safeMaxX - Math.min(availInteriorW, shelf.totalW));
+      const clampedStartX = Math.max(safeMinX, Math.min(maxValidStartX, idealStartX));
+      currentX = Math.max(
+        safeMinX,
+        Math.min(maxValidStartX, clampedStartX + options.productionOffsetX)
+      );
+    } else {
+      currentX = Math.round((maxShelfW - shelf.totalW) / 2) + options.productionOffsetX;
+    }
+
+    for (const bp of shelf.items) {
       const {
         stage,
         machine,
@@ -745,19 +817,13 @@ export function synthesizeFactoryLayout(
       const mW = machine.tileSize.width;
       const mH = machine.tileSize.height;
 
-      // In Grid Frame mode: wrap to a new shelf upward if this stage block overflows interior X bounds
-      if (interiorBounds && currentX > safeMinX && currentX + bp.blockW > safeMaxX) {
-        currentX = safeMinX;
-        currentBaseY -= maxShelfHeight + layerGapY;
-        maxShelfHeight = 0;
-      }
-
-      // Check vertical headroom inside Grid Frame; skip block gracefully if no vertical space left
       const effectiveRows = interiorBounds
         ? Math.min(rows, Math.max(0, Math.floor((currentBaseY - safeMinY + (rowStepY - mH)) / rowStepY)))
         : rows;
       const effectiveBlockH =
-        effectiveRows > 0 ? effectiveRows * rowStepY - (bp.fluidInputs.length > 0 || bp.fluidOutputs.length > 0 ? 1 : 0) : bp.blockH;
+        effectiveRows > 0
+          ? effectiveRows * rowStepY - (bp.fluidInputs.length > 0 || bp.fluidOutputs.length > 0 ? 1 : 0)
+          : bp.blockH;
 
       const blockTopY = currentBaseY - effectiveBlockH;
       const blockBottomY = currentBaseY;
@@ -1361,21 +1427,10 @@ export function synthesizeFactoryLayout(
         stageInputAnchors.set(directPair.feeder.id, feederInAnchors);
       }
 
-      if (interiorBounds) {
-        maxShelfHeight = Math.max(maxShelfHeight, effectiveBlockH);
-        shelfX = currentX + bp.blockW + blockGapX;
-      }
       currentX += bp.blockW + blockGapX;
     }
 
-    if (interiorBounds) {
-      // Next topological layer continues onto next shelf with neat spacing if needed
-      currentBaseY -= maxShelfHeight + layerGapY;
-      shelfX = safeMinX;
-      maxShelfHeight = 0;
-    } else {
-      currentBaseY -= maxLayerHeight + layerGapY;
-    }
+    currentBaseY -= shelf.maxH + layerGapY;
   }
 
   // 4. Route Inter-Stage Belts & Underground Crossings between connected stages
@@ -1573,11 +1628,9 @@ export function synthesizeFactoryLayout(
       });
     } else {
       const entryX = interiorBounds
-        ? interiorBounds.minX + 2
+        ? Math.max(interiorBounds.minX + 2, preBounds.minX - 5)
         : preBounds.minX - 5;
-      const centerY = interiorBounds
-        ? Math.round((interiorBounds.minY + interiorBounds.maxY) / 2)
-        : Math.round((preBounds.minY + preBounds.maxY) / 2);
+      const centerY = Math.round((preBounds.minY + preBounds.maxY) / 2);
       const totalSpan = Math.max(0, (rawRequests.length - 1) * 2);
       const startSlotY = interiorBounds
         ? Math.max(interiorBounds.minY + 1, centerY - Math.floor(totalSpan / 2))
@@ -1652,7 +1705,7 @@ export function synthesizeFactoryLayout(
     let tipY = interiorBounds ? Math.max(interiorBounds.minY, src.y - 2) : src.y - 3;
     if (inputSide !== 'distributed') {
       const alignedExitY = interiorBounds
-        ? interiorBounds.minY
+        ? Math.max(interiorBounds.minY, currentPreOutBounds.minY - 3)
         : currentPreOutBounds.minY - 3;
       if (alignedExitY < tipY) {
         let canReachStraight = true;

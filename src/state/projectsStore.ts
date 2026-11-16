@@ -5,7 +5,7 @@
 
 import { DEFAULT_PACK_ID } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit } from '../engine/types.ts';
-import type { GridEntity, InputAlignmentSide } from '../spatial/types.ts';
+import type { GridEntity, InputAlignmentSide, TrainStationConfig } from '../spatial/types.ts';
 
 export interface FactoryProject {
   id: string;
@@ -19,7 +19,11 @@ export interface FactoryProject {
     includePowerPoles?: boolean;
     directInsertion?: boolean;
     inputSide?: InputAlignmentSide;
+    productionOffsetX?: number;
+    productionOffsetY?: number;
   };
+  /** Optional Train Entrance & Cargo Wagon slot configuration */
+  trainStation?: TrainStationConfig;
   /** Optional user-edited spatial layout entities (overrides auto-layout until reset) */
   customEntities?: GridEntity[];
   /** Optional imported external Base Grid Frame entities (rails, roboports, walls, substations) */

@@ -50,11 +50,36 @@ service cloud.firestore {
 
     function isValidLayoutOptions(opts) {
       return opts is map
-        && opts.keys().hasOnly(['includeBeacons', 'includePowerPoles', 'directInsertion', 'inputSide'])
+        && opts.keys().hasOnly([
+          'includeBeacons',
+          'includePowerPoles',
+          'directInsertion',
+          'inputSide',
+          'productionOffsetX',
+          'productionOffsetY'
+        ])
         && (!('includeBeacons' in opts) || opts.includeBeacons is bool)
         && (!('includePowerPoles' in opts) || opts.includePowerPoles is bool)
         && (!('directInsertion' in opts) || opts.directInsertion is bool)
-        && (!('inputSide' in opts) || opts.inputSide in ['distributed', 'south', 'west']);
+        && (!('inputSide' in opts) || opts.inputSide in ['distributed', 'south', 'west'])
+        && (!('productionOffsetX' in opts) || (opts.productionOffsetX is number && opts.productionOffsetX >= -2000 && opts.productionOffsetX <= 2000))
+        && (!('productionOffsetY' in opts) || (opts.productionOffsetY is number && opts.productionOffsetY >= -2000 && opts.productionOffsetY <= 2000));
+    }
+
+    function isValidTrainStation(ts) {
+      return ts is map
+        && ts.keys().hasAll(['tileX', 'tileY', 'direction', 'wagonCount', 'slotsPerWagon'])
+        && ts.keys().hasOnly(['tileX', 'tileY', 'direction', 'wagonCount', 'slotsPerWagon', 'stackSizeOverrides'])
+        && ts.tileX is number
+        && ts.tileY is number
+        && ts.direction in [0, 4, 8, 12]
+        && ts.wagonCount is number
+        && ts.wagonCount >= 1
+        && ts.wagonCount <= 32
+        && ts.slotsPerWagon is number
+        && ts.slotsPerWagon >= 1
+        && ts.slotsPerWagon <= 200
+        && (!('stackSizeOverrides' in ts) || (ts.stackSizeOverrides is map && ts.stackSizeOverrides.size() <= 40));
     }
 
     function isValidSchematic(data, userId, schematicId) {
@@ -86,6 +111,7 @@ service cloud.firestore {
           'stageOverrides',
           'researchProductivityBonuses',
           'layoutOptions',
+          'trainStation',
           'blueprintString',
           'gridFrameString',
           'createdAt',
@@ -130,6 +156,7 @@ service cloud.firestore {
         && (!('stageOverrides' in data) || (data.stageOverrides is map && data.stageOverrides.size() <= 80))
         && (!('researchProductivityBonuses' in data) || (data.researchProductivityBonuses is map && data.researchProductivityBonuses.size() <= 40))
         && (!('layoutOptions' in data) || isValidLayoutOptions(data.layoutOptions))
+        && (!('trainStation' in data) || isValidTrainStation(data.trainStation))
         && (!('blueprintString' in data) || (data.blueprintString is string && data.blueprintString.size() <= 32000))
         && (!('gridFrameString' in data) || (data.gridFrameString is string && data.gridFrameString.size() <= 32000))
         && data.createdAt is timestamp
@@ -195,6 +222,7 @@ service cloud.firestore {
             'stageOverrides',
             'researchProductivityBonuses',
             'layoutOptions',
+            'trainStation',
             'blueprintString',
             'gridFrameString',
             'updatedAt'

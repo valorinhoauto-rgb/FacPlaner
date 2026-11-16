@@ -23,6 +23,7 @@ import { packRegistry } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit, StageOverride } from '../engine/types.ts';
 import { db, handleFirestoreError, OperationType } from '../firebase.ts';
 import { encodeBlueprintString, parseBlueprintToEntities } from '../spatial/blueprintCodec.ts';
+import type { TrainStationConfig } from '../spatial/types.ts';
 import type { FactoryProject } from '../state/projectsStore.ts';
 
 const VALID_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -103,7 +104,10 @@ interface CompactSchematicPayload {
     includePowerPoles?: boolean;
     directInsertion?: boolean;
     inputSide?: 'distributed' | 'south' | 'west';
+    productionOffsetX?: number;
+    productionOffsetY?: number;
   };
+  trainStation?: TrainStationConfig;
   blueprintString?: string;
   gridFrameString?: string;
 }
@@ -174,6 +178,26 @@ export function buildCompactSchematicPayload(
     if (Object.keys(cleanOpts).length > 0) {
       payload.layoutOptions = cleanOpts;
     }
+  }
+  if (project.trainStation) {
+    const ts = project.trainStation;
+    const cleanTrain: TrainStationConfig = {
+      tileX: Math.round(ts.tileX),
+      tileY: Math.round(ts.tileY),
+      direction: ts.direction,
+      wagonCount: Math.max(1, Math.min(32, Math.round(ts.wagonCount || 1))),
+      slotsPerWagon: Math.max(1, Math.min(200, Math.round(ts.slotsPerWagon || 40))),
+    };
+    if (ts.stackSizeOverrides && Object.keys(ts.stackSizeOverrides).length > 0) {
+      const entries = Object.entries(ts.stackSizeOverrides)
+        .filter(([, v]) => Number.isFinite(v) && v >= 1)
+        .slice(0, 40)
+        .map(([k, v]) => [k.slice(0, 80), Math.round(v)] as const);
+      if (entries.length > 0) {
+        cleanTrain.stackSizeOverrides = Object.fromEntries(entries);
+      }
+    }
+    payload.trainStation = cleanTrain;
   }
   if (project.customEntities && project.customEntities.length > 0) {
     const encoded = encodeBlueprintString(project.customEntities, name, description);
@@ -258,6 +282,24 @@ export function hydrateFactoryProject(raw: Record<string, unknown>): FactoryProj
     }
   }
 
+  let trainStation: TrainStationConfig | undefined;
+  if (raw.trainStation && typeof raw.trainStation === 'object') {
+    const ts = raw.trainStation as Record<string, unknown>;
+    const dirNum = Number(ts.direction ?? 4);
+    const validDir = dirNum === 0 || dirNum === 4 || dirNum === 8 || dirNum === 12 ? dirNum : 4;
+    trainStation = {
+      tileX: Number(ts.tileX ?? 0),
+      tileY: Number(ts.tileY ?? 0),
+      direction: validDir,
+      wagonCount: Math.max(1, Math.min(32, Math.round(Number(ts.wagonCount ?? 2)))),
+      slotsPerWagon: Math.max(1, Math.min(200, Math.round(Number(ts.slotsPerWagon ?? 40)))),
+      stackSizeOverrides:
+        ts.stackSizeOverrides && typeof ts.stackSizeOverrides === 'object'
+          ? (ts.stackSizeOverrides as Record<string, number>)
+          : undefined,
+    };
+  }
+
   return {
     id,
     name: String(raw.name ?? 'Esquemática'),
@@ -269,6 +311,7 @@ export function hydrateFactoryProject(raw: Record<string, unknown>): FactoryProj
       raw.layoutOptions && typeof raw.layoutOptions === 'object'
         ? (raw.layoutOptions as FactoryProject['layoutOptions'])
         : undefined,
+    trainStation,
     customEntities,
     gridFrame,
     createdAt: toIsoString(raw.createdAt),
@@ -307,6 +350,7 @@ export async function saveSchematicToCloud(
         stageOverrides: payload.stageOverrides ?? deleteField(),
         researchProductivityBonuses: payload.researchProductivityBonuses ?? deleteField(),
         layoutOptions: payload.layoutOptions ?? deleteField(),
+        trainStation: payload.trainStation ?? deleteField(),
         blueprintString: payload.blueprintString ?? deleteField(),
         gridFrameString: payload.gridFrameString ?? deleteField(),
         updatedAt: serverTimestamp(),

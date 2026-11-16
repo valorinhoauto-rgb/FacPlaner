@@ -73,8 +73,9 @@ export function buildBlueprintJson(
       },
     };
 
-    if (e.direction !== 0) {
-      entity.direction = e.direction;
+    const exportDir = e.rawDirection ?? e.direction;
+    if (exportDir !== 0) {
+      entity.direction = exportDir;
     }
     if (e.recipeId) {
       entity.recipe = e.recipeId;
@@ -151,17 +152,19 @@ export function decodeBlueprintString(blueprintString: string): FactorioBlueprin
   throw new Error('A string decodificada não contém um objeto "blueprint" válido.');
 }
 
-function normalizeDirection(rawDir: number | undefined, isFactorio2: boolean): Direction {
+function normalizeDirection(
+  rawDir: number | undefined,
+  isFactorio2: boolean
+): { direction: Direction; rawDirection: number } {
   const d = rawDir ?? 0;
+  let raw16: number;
   if (!isFactorio2 && d <= 7) {
-    // Factorio 1.1: 0=N, 2=E, 4=S, 6=W -> multiply by 2
-    const mapped = (d * 2) % 16;
-    if (mapped === 0 || mapped === 4 || mapped === 8 || mapped === 12) return mapped;
+    raw16 = ((d * 2) % 16 + 16) % 16;
+  } else {
+    raw16 = ((Math.round(d) % 16) + 16) % 16;
   }
-  if (d === 0 || d === 4 || d === 8 || d === 12) return d;
-  if (d === 2) return 4;
-  if (d === 6) return 12;
-  return 0;
+  const cardinal = ((Math.round(raw16 / 4) * 4) % 16) as Direction;
+  return { direction: cardinal, rawDirection: raw16 };
 }
 
 function inferEntityKindAndSize(
@@ -211,7 +214,11 @@ function inferEntityKindAndSize(
 
   // Structural / Rail / Logistics / Defense Grid Entities
   if (name.includes('rail-ramp')) {
-    return { kind: 'grid-obstacle', width: 4, height: 8 };
+    const horiz = direction === 4 || direction === 12;
+    return { kind: 'grid-obstacle', width: horiz ? 16 : 4, height: horiz ? 4 : 16 };
+  }
+  if (name.includes('rail-support')) {
+    return { kind: 'grid-obstacle', width: 3, height: 3 };
   }
   if (name.includes('curved-rail') || name.includes('elevated-curved-rail')) {
     return { kind: 'grid-obstacle', width: 4, height: 4 };
@@ -219,7 +226,8 @@ function inferEntityKindAndSize(
   if (
     name.includes('straight-rail') ||
     name.includes('half-diagonal-rail') ||
-    name.includes('elevated-straight-rail')
+    name.includes('elevated-straight-rail') ||
+    name.includes('elevated-half-diagonal-rail')
   ) {
     return { kind: 'grid-obstacle', width: 2, height: 2 };
   }
@@ -304,7 +312,7 @@ export function parseBlueprintToEntities(
   const isFactorio2 = (bp.version ?? FACTORIO_2_0_VERSION) >= 2 * 2 ** 48;
 
   const converted: GridEntity[] = rawEntities.map((re, idx) => {
-    const dir = normalizeDirection(re.direction, isFactorio2);
+    const { direction: dir, rawDirection } = normalizeDirection(re.direction, isFactorio2);
     const { kind, width, height } = inferEntityKindAndSize(re.name, dir, index);
     const tileX = Math.round(re.position.x - width / 2);
     const tileY = Math.round(re.position.y - height / 2);
@@ -338,6 +346,7 @@ export function parseBlueprintToEntities(
       width,
       height,
       direction: dir,
+      rawDirection: rawDirection !== dir ? rawDirection : undefined,
       recipeId: re.recipe,
       moduleIds: moduleIds.length > 0 ? moduleIds : undefined,
       undergroundType: re.type,

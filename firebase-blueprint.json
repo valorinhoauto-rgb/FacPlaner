@@ -113,7 +113,11 @@
         },
         "layoutOptions": {
           "type": "object",
-          "description": "Opções compactas de layout (beacons, postes, inserção direta, inputSide)."
+          "description": "Opções compactas de layout (beacons, postes, inserção direta, inputSide, productionOffsetX, productionOffsetY)."
+        },
+        "trainStation": {
+          "type": "object",
+          "description": "Configuração opcional da entrada de trem e cálculo de slots/vagões (tileX, tileY, direction, wagonCount, slotsPerWagon, stackSizeOverrides)."
         },
         "blueprintString": {
           "type": "string",

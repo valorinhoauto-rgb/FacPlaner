@@ -571,6 +571,8 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 compactionMode={project.compactionMode}
                 layoutOptions={project.layoutOptions}
                 hasGridFrame={Boolean(project.gridFrame && project.gridFrame.length > 0)}
+                rawInputs={solveResult.rawInputs}
+                trainStation={project.trainStation}
                 selectedStageId={selectedStageId}
                 onSelectStage={setSelectedStageId}
                 onChangeEntities={(next: GridEntity[]) =>
@@ -584,6 +586,11 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                   onUpdateProject((prev) => ({
                     ...prev,
                     gridFrame: frameEntities.map((fe) => ({ ...fe, isGridFrame: true })),
+                    layoutOptions: {
+                      ...prev.layoutOptions,
+                      productionOffsetX: 0,
+                      productionOffsetY: 0,
+                    },
                     customEntities: undefined,
                     updatedAt: new Date().toISOString(),
                   }))
@@ -592,6 +599,11 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                   onUpdateProject((prev) => ({
                     ...prev,
                     gridFrame: undefined,
+                    layoutOptions: {
+                      ...prev.layoutOptions,
+                      productionOffsetX: 0,
+                      productionOffsetY: 0,
+                    },
                     customEntities: undefined,
                     updatedAt: new Date().toISOString(),
                   }))
@@ -617,6 +629,13 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                       ...patch,
                     },
                     customEntities: undefined,
+                    updatedAt: new Date().toISOString(),
+                  }))
+                }
+                onChangeTrainStation={(nextStation) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    trainStation: nextStation,
                     updatedAt: new Date().toISOString(),
                   }))
                 }

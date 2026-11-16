@@ -104,4 +104,35 @@ describe('Cloud Schematics Compact Serialization', () => {
     expect(restored.gridFrame?.length).toBe(parsedFrame.entities.length);
     expect(restored.gridFrame?.every((e) => e.isGridFrame === true)).toBe(true);
   });
+
+  it('persists trainStation config and productionOffsetX/Y cleanly', () => {
+    const project = createProjectFromTemplate(PROJECT_TEMPLATES[0]);
+    project.layoutOptions = {
+      ...project.layoutOptions,
+      productionOffsetX: 4,
+      productionOffsetY: -6,
+    };
+    project.trainStation = {
+      tileX: 12,
+      tileY: 48,
+      direction: 4,
+      wagonCount: 3,
+      slotsPerWagon: 40,
+      stackSizeOverrides: { 'iron-plate': 100, 'copper-plate': 100 },
+    };
+
+    const payload = buildCompactSchematicPayload(project, 'user_123');
+    expect(payload.layoutOptions?.productionOffsetX).toBe(4);
+    expect(payload.layoutOptions?.productionOffsetY).toBe(-6);
+    expect(payload.trainStation?.wagonCount).toBe(3);
+
+    const restored = hydrateFactoryProject({
+      ...payload,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+    });
+    expect(restored.layoutOptions?.productionOffsetX).toBe(4);
+    expect(restored.layoutOptions?.productionOffsetY).toBe(-6);
+    expect(restored.trainStation).toEqual(project.trainStation);
+  });
 });
