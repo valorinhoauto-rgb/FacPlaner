@@ -6,6 +6,7 @@
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { Cloud, LogIn, LogOut, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import factorioLogo from './assets/images/factorio_planner_logo_1794839939049.jpg';
 import { DatabaseExplorerView } from './components/database/DatabaseExplorerView.tsx';
 import { DashboardView } from './components/dashboard/DashboardView.tsx';
 import { ProductionEditorView } from './components/editor/ProductionEditorView.tsx';
@@ -14,6 +15,7 @@ import {
   type TutorialNavigateTarget,
 } from './components/tutorial/VisualTutorialView.tsx';
 import { auth, signInWithGoogle, signOutUser } from './firebase.ts';
+import { useI18n } from './i18n/I18nContext.tsx';
 import {
   deleteSchematicFromCloud,
   ensureUserProfile,
@@ -31,6 +33,7 @@ type ActiveRoute = 'projects' | 'editor' | 'database' | 'tutorial';
 type DatabaseTab = 'recipes' | 'machines' | 'items' | 'mods' | 'assets';
 
 export default function App() {
+  const { lang, setLang, t } = useI18n();
   const [projects, setProjects] = useState<FactoryProject[]>(() => loadSavedProjects());
   const [activeProjectId, setActiveProjectId] = useState<string>(() => projects[0]?.id ?? '');
   const [route, setRoute] = useState<ActiveRoute>('editor');
@@ -44,6 +47,23 @@ export default function App() {
 
   const saveTimersRef = useRef<Map<string, number>>(new Map());
   const pendingSaveProjectsRef = useRef<Set<string>>(new Set());
+  const ensuredProfileUidRef = useRef<string | null>(null);
+  const errorsRef = useRef(t.errors);
+  errorsRef.current = t.errors;
+
+  const formatCloudError = (err: unknown, fallback: string): string => {
+    const raw = err instanceof Error ? err.message : String(err ?? '');
+    try {
+      const parsed = JSON.parse(raw) as { error?: string; operationType?: string };
+      if (parsed?.error?.includes('Missing or insufficient permissions')) {
+        return errorsRef.current.cloudPermissionDenied;
+      }
+      if (parsed?.error) return `${fallback}: ${parsed.error}`;
+    } catch {
+      // plain string error
+    }
+    return raw || fallback;
+  };
 
   useEffect(() => {
     saveProjects(projects);
@@ -62,6 +82,7 @@ export default function App() {
       setAuthReady(true);
 
       if (!nextUser) {
+        ensuredProfileUidRef.current = null;
         setCloudProjectIds(new Set());
         return;
       }
@@ -69,6 +90,7 @@ export default function App() {
       try {
         setIsSyncing(true);
         await ensureUserProfile(nextUser);
+        ensuredProfileUidRef.current = nextUser.uid;
         unsubscribeSchematics = subscribeUserSchematics(
           nextUser.uid,
           (cloudProjects) => {
@@ -92,14 +114,12 @@ export default function App() {
           },
           (err) => {
             setIsSyncing(false);
-            setAuthNotice(`Erro ao sincronizar esquemáticas: ${err.message}`);
+            setAuthNotice(formatCloudError(err, errorsRef.current.cloudSyncFailed));
           }
         );
       } catch (err) {
         setIsSyncing(false);
-        setAuthNotice(
-          err instanceof Error ? err.message : 'Falha ao inicializar perfil na nuvem.'
-        );
+        setAuthNotice(formatCloudError(err, errorsRef.current.cloudProfileFailed));
       }
     });
 
@@ -119,13 +139,16 @@ export default function App() {
     if (!targetUser) return;
     pendingSaveProjectsRef.current.add(project.id);
     setIsSyncing(true);
+    setAuthNotice(null);
     try {
+      if (ensuredProfileUidRef.current !== targetUser.uid) {
+        await ensureUserProfile(targetUser);
+        ensuredProfileUidRef.current = targetUser.uid;
+      }
       await saveSchematicToCloud(targetUser.uid, project);
       setCloudProjectIds((prev) => new Set(prev).add(project.id));
     } catch (err) {
-      setAuthNotice(
-        err instanceof Error ? err.message : 'Falha ao salvar esquemática na nuvem.'
-      );
+      setAuthNotice(formatCloudError(err, t.errors.cloudSaveFailed));
     } finally {
       pendingSaveProjectsRef.current.delete(project.id);
       setIsSyncing(false);
@@ -153,12 +176,10 @@ export default function App() {
       const code = (err as { code?: string })?.code ?? '';
       if (code === 'auth/popup-closed-by-user') return;
       if (code === 'auth/unauthorized-domain') {
-        setAuthNotice(
-          'Domínio não autorizado no Firebase Auth. No Firebase Console → Authentication → Settings → Authorized domains, adicione este domínio (ex.: seu site Netlify).'
-        );
+        setAuthNotice(t.errors.unauthorizedDomain);
         return;
       }
-      setAuthNotice(err instanceof Error ? err.message : 'Falha ao entrar com Google.');
+      setAuthNotice(err instanceof Error ? err.message : t.errors.signInFailed);
     }
   };
 
@@ -187,7 +208,7 @@ export default function App() {
     const copy: FactoryProject = {
       ...structuredClone(source),
       id: `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      name: `${source.name} (Cópia)`,
+      name: `${source.name}${t.projects.copySuffix}`,
       createdAt: now,
       updatedAt: now,
     };
@@ -208,7 +229,10 @@ export default function App() {
     setProjects((prev) => {
       const remaining = prev.filter((p) => p.id !== projectId);
       if (remaining.length === 0) {
-        const fallback = createBlankProject();
+        const fallback = createBlankProject(undefined, {
+          name: t.projects.blankName,
+          description: t.projects.blankDescription,
+        });
         setActiveProjectId(fallback.id);
         return [fallback];
       }
@@ -222,9 +246,7 @@ export default function App() {
       setIsSyncing(true);
       void deleteSchematicFromCloud(user.uid, projectId)
         .catch((err) => {
-          setAuthNotice(
-            err instanceof Error ? err.message : 'Falha ao excluir esquemática da nuvem.'
-          );
+          setAuthNotice(formatCloudError(err, t.errors.cloudDeleteFailed));
         })
         .finally(() => setIsSyncing(false));
     }
@@ -244,22 +266,35 @@ export default function App() {
   };
 
   const handleQuickNew = () => {
-    handleCreateProject(createBlankProject());
+    handleCreateProject(
+      createBlankProject(undefined, {
+        name: t.projects.blankName,
+        description: t.projects.blankDescription,
+      })
+    );
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0C0F14] text-slate-100">
-      {/* 3-Zone Top Bar Contract */}
-      <header className="h-[57px] flex items-center justify-between gap-6 px-6 bg-[#11151C] border-b border-[#252C37] shrink-0">
+    <div className="min-h-screen flex flex-col bg-[#141517] text-slate-100">
+      {/* 3-Zone Factorio Top Bar Contract */}
+      <header className="h-[58px] flex items-center justify-between gap-8 px-6 bg-[#1B1C20] border-b border-[#33363E] factorio-bevel shrink-0">
         <a
           href="#projects"
           onClick={(e) => {
             e.preventDefault();
             setRoute('projects');
           }}
-          className="font-display text-base font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-2.5 font-display text-[17px] font-bold tracking-tight text-slate-100 whitespace-nowrap shrink-0 hover:text-amber-300 transition-colors"
         >
-          Factorio Production Planner
+          <span className="w-8 h-8 rounded-[4px] border border-[#484C56] bg-[#141517] overflow-hidden shrink-0 flex items-center justify-center">
+            <img
+              src={factorioLogo}
+              alt="Logo Factorio Production Planner"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+            />
+          </span>
+          <span>Factorio Production Planner</span>
         </a>
 
         <nav className="flex items-center gap-6 text-sm font-medium">
@@ -272,7 +307,7 @@ export default function App() {
                 : 'text-slate-400 hover:text-slate-100'
             }`}
           >
-            Projetos
+            {t.nav.projects}
           </button>
           <button
             type="button"
@@ -283,7 +318,7 @@ export default function App() {
                 : 'text-slate-400 hover:text-slate-100'
             }`}
           >
-            Editor
+            {t.nav.editor}
           </button>
           <button
             type="button"
@@ -294,7 +329,7 @@ export default function App() {
                 : 'text-slate-400 hover:text-slate-100'
             }`}
           >
-            Banco de Dados
+            {t.nav.database}
           </button>
           <button
             type="button"
@@ -305,27 +340,56 @@ export default function App() {
                 : 'text-slate-400 hover:text-slate-100'
             }`}
           >
-            Tutorial
+            {t.nav.tutorial}
           </button>
         </nav>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-3 shrink-0">
+          <div
+            role="group"
+            aria-label="Language selector"
+            className="flex items-center p-0.5 bg-[#121316] border border-[#32363E] rounded shrink-0"
+          >
+            <button
+              type="button"
+              onClick={() => setLang('pt-BR')}
+              className={`px-2 py-1 text-[11px] font-mono rounded transition-colors whitespace-nowrap ${
+                lang === 'pt-BR'
+                  ? 'bg-[#282B33] text-amber-400 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              PT-BR
+            </button>
+            <button
+              type="button"
+              onClick={() => setLang('en')}
+              className={`px-2 py-1 text-[11px] font-mono rounded transition-colors whitespace-nowrap ${
+                lang === 'en'
+                  ? 'bg-[#282B33] text-amber-400 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              EN
+            </button>
+          </div>
+
           {authReady && (
             user ? (
-              <div className="flex items-center gap-2 px-2.5 py-1 bg-[#161C25] border border-[#26303F] rounded text-xs">
+              <div className="flex items-center gap-2 text-xs text-slate-300">
                 <Cloud
                   className={`w-3.5 h-3.5 shrink-0 ${
                     isSyncing ? 'text-amber-400' : 'text-emerald-400'
                   }`}
                 />
-                <span className="max-w-[120px] truncate text-slate-200 font-medium">
-                  {user.displayName || user.email?.split('@')[0] || 'Conta'}
+                <span className="max-w-[130px] truncate font-medium text-slate-200">
+                  {user.displayName || user.email?.split('@')[0] || t.nav.account}
                 </span>
                 <button
                   type="button"
                   onClick={handleSignOut}
-                  title="Sair da conta"
-                  className="p-0.5 text-slate-400 hover:text-slate-100"
+                  title={t.nav.signOut}
+                  className="p-1 text-slate-400 hover:text-slate-100 transition-colors"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
@@ -334,10 +398,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSignIn}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#161C25] border border-[#283242] rounded hover:border-amber-500/70 transition-colors whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#24262C] border border-[#393D47] rounded hover:border-amber-500/70 factorio-bevel transition-colors whitespace-nowrap shrink-0"
               >
                 <LogIn className="w-3.5 h-3.5 text-amber-400" />
-                Entrar
+                {t.nav.signIn}
               </button>
             )
           )}
@@ -345,9 +409,9 @@ export default function App() {
           <button
             type="button"
             onClick={handleQuickNew}
-            className="px-4 py-1.5 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0"
+            className="px-4 py-1.5 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] transition-colors whitespace-nowrap shrink-0"
           >
-            Novo Plano
+            {t.nav.newPlan}
           </button>
         </div>
       </header>
@@ -359,7 +423,7 @@ export default function App() {
             type="button"
             onClick={() => setAuthNotice(null)}
             className="text-red-300 hover:text-white shrink-0"
-            aria-label="Fechar aviso"
+            aria-label={t.nav.closeNotice}
           >
             <X className="w-3.5 h-3.5" />
           </button>

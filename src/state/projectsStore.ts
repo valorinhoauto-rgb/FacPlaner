@@ -158,12 +158,17 @@ export const PROJECT_TEMPLATES: Array<Omit<FactoryProject, 'id' | 'createdAt' | 
 
 const STORAGE_KEY = 'factorio_planner_projects_v1';
 
-export function createBlankProject(packId: string = DEFAULT_PACK_ID): FactoryProject {
+export function createBlankProject(
+  packId: string = DEFAULT_PACK_ID,
+  labels?: { name?: string; description?: string }
+): FactoryProject {
   const now = new Date().toISOString();
   return {
     id: `proj_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    name: 'Nova Esquemática',
-    description: 'Escolha o item desejado no Editor para começar a montar a linha de produção.',
+    name: labels?.name ?? 'Nova Esquemática',
+    description:
+      labels?.description ??
+      'Escolha o item desejado no Editor para começar a montar a linha de produção.',
     rateUnit: 'per_minute',
     compactionMode: 'compact',
     config: {

@@ -8,6 +8,7 @@ import { CheckCircle2, FolderOpen, Image as ImageIcon, Search, Trash2, Upload } 
 import { spritePackStore } from '../../assets/spritePackStore.ts';
 import type { FactorioDataRawDump } from '../../data/dumpImporter.ts';
 import { packRegistry } from '../../data/packRegistry.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
 type DatabaseTab = 'recipes' | 'machines' | 'items' | 'mods' | 'assets';
@@ -23,6 +24,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
   onTabChange,
   onPackImported,
 }) => {
+  const { t } = useI18n();
   const [selectedPackId, setSelectedPackId] = useState(packRegistry.listPacks()[0].id);
   const [internalTab, setInternalTab] = useState<DatabaseTab>(initialTab ?? 'recipes');
   const [search, setSearch] = useState('');
@@ -103,13 +105,21 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
       setSelectedPackId(importedPack.id);
       setImportStatus({
         ok: validation.valid,
-        message: `Importado "${importedPack.name}": ${validation.stats.items} itens, ${validation.stats.fluids} fluidos, ${validation.stats.recipes} receitas, ${validation.stats.machines} máquinas (${validation.errors.length} erros, ${validation.warnings.length} avisos).`,
+        message: t.database.importSuccessSummary({
+          name: importedPack.name,
+          items: validation.stats.items,
+          fluids: validation.stats.fluids,
+          recipes: validation.stats.recipes,
+          machines: validation.stats.machines,
+          errors: validation.errors.length,
+          warnings: validation.warnings.length,
+        }),
       });
       onPackImported(importedPack.id);
     } catch (err) {
       setImportStatus({
         ok: false,
-        message: err instanceof Error ? err.message : 'Erro ao processar data-raw-dump.json.',
+        message: err instanceof Error ? err.message : t.database.dumpErrorFallback,
       });
     } finally {
       e.target.value = '';
@@ -128,10 +138,10 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
       <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 border-b border-[#252C37] pb-5">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold text-slate-100">
-            Banco de Dados, Mods & Assets do Factorio
+            {t.database.title}
           </h1>
           <p className="text-sm text-slate-400">
-            Explore Vanilla, Space Age e Krastorio 2, importe qualquer <code className="font-mono text-amber-400">data-raw-dump.json</code> ou carregue os ícones <code className="font-mono text-slate-300">.png</code> locais do jogo.
+            {t.database.subtitleBefore} <code className="font-mono text-amber-400">data-raw-dump.json</code> {t.database.subtitleMid} <code className="font-mono text-slate-300">.png</code> {t.database.subtitleAfter}
           </p>
         </div>
 
@@ -154,29 +164,29 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
         <div className="flex items-center gap-1 p-1 bg-[#141920] border border-[#252C37] rounded-md w-fit overflow-x-auto">
           {[
-            { id: 'recipes', label: `Receitas (${pack.recipes.length})` },
-            { id: 'machines', label: `Máquinas (${pack.machines.length})` },
-            { id: 'items', label: `Itens & Fluidos (${pack.items.length + pack.fluids.length})` },
-            { id: 'mods', label: 'Importar Mods (JSON)' },
+            { id: 'recipes', label: `${t.database.tabRecipes} (${pack.recipes.length})` },
+            { id: 'machines', label: `${t.database.tabMachines} (${pack.machines.length})` },
+            { id: 'items', label: `${t.database.tabItems} (${pack.items.length + pack.fluids.length})` },
+            { id: 'mods', label: t.database.tabMods },
             {
               id: 'assets',
               label:
                 spriteStats.totalFiles > 0
-                  ? `Assets PNG (${spriteStats.totalFiles})`
-                  : 'Assets do Jogo (PNG)',
+                  ? `${t.database.assetsLoadedTabPrefix} (${spriteStats.totalFiles})`
+                  : t.database.tabAssets,
             },
-          ].map((t) => (
+          ].map((tabItem) => (
             <button
-              key={t.id}
+              key={tabItem.id}
               type="button"
-              onClick={() => selectTab(t.id as DatabaseTab)}
+              onClick={() => selectTab(tabItem.id as DatabaseTab)}
               className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                tab === t.id
+                tab === tabItem.id
                   ? 'bg-amber-500 text-slate-950 font-semibold'
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              {t.label}
+              {tabItem.label}
             </button>
           ))}
         </div>
@@ -188,7 +198,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filtrar por nome ou ID..."
+              placeholder={t.database.filterPlaceholder}
               className="w-full pl-8 pr-3 py-1.5 text-xs bg-[#141920] border border-[#262F3D] rounded-md text-slate-100 focus:outline-none focus:border-amber-500"
             />
           </div>
@@ -200,12 +210,12 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="text-slate-400 border-b border-[#252C37] bg-[#11151B]">
-                <th className="text-left px-4 py-2.5 font-medium">Receita</th>
-                <th className="text-left px-4 py-2.5 font-medium">Categoria</th>
-                <th className="text-right px-4 py-2.5 font-medium">Tempo</th>
-                <th className="text-left px-4 py-2.5 font-medium">Ingredientes</th>
-                <th className="text-left px-4 py-2.5 font-medium">Produtos</th>
-                <th className="text-center px-4 py-2.5 font-medium">Produtividade</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colRecipe}</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colCategory}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colTime}</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colIngredients}</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colProducts}</th>
+                <th className="text-center px-4 py-2.5 font-medium">{t.database.colProductivity}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#1E2530]">
@@ -235,7 +245,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
                       {r.results.map((res) => `${res.amount}× ${res.id}`).join(', ')}
                     </td>
                     <td className="px-4 py-2.5 text-center text-slate-300">
-                      {r.allowProductivity ? 'Sim' : 'Não'}
+                      {r.allowProductivity ? t.database.yes : t.database.no}
                     </td>
                   </tr>
                 );
@@ -250,13 +260,13 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="text-slate-400 border-b border-[#252C37] bg-[#11151B]">
-                <th className="text-left px-4 py-2.5 font-medium">Máquina</th>
-                <th className="text-right px-4 py-2.5 font-medium">Velocidade</th>
-                <th className="text-right px-4 py-2.5 font-medium">Prod. Base</th>
-                <th className="text-right px-4 py-2.5 font-medium">Slots</th>
-                <th className="text-right px-4 py-2.5 font-medium">Tamanho</th>
-                <th className="text-right px-4 py-2.5 font-medium">Energia</th>
-                <th className="text-left px-4 py-2.5 font-medium">Categorias Suportadas</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colMachine}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colSpeed}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colBaseProd}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colSlots}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colSize}</th>
+                <th className="text-right px-4 py-2.5 font-medium">{t.database.colPower}</th>
+                <th className="text-left px-4 py-2.5 font-medium">{t.database.colSupportedCategories}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#1E2530]">
@@ -321,16 +331,16 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
         <div className="max-w-2xl p-6 bg-[#141920] border border-[#262F3D] rounded-md space-y-5">
           <div className="space-y-1">
             <h2 className="text-base font-semibold text-slate-100">
-              Importar Mods via <code className="font-mono text-amber-400">data-raw-dump.json</code>
+              {t.database.modsTitlePrefix} <code className="font-mono text-amber-400">data-raw-dump.json</code>
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Execute <code className="px-1.5 py-0.5 bg-[#0C0F14] rounded font-mono text-slate-200">factorio --dump-data-raw</code> com seus mods ativos (Space Age, Krastorio 2, Pyanodons, Bob&apos;s, etc.) e envie o arquivo gerado em <code className="font-mono">script-output/data-raw-dump.json</code>. Todas as receitas, máquinas customizadas, caminhos de ícones (<code className="font-mono">__mod__/...</code>), postes elétricos e pesquisas infinitas serão importados automaticamente.
+              {t.database.modsDescBefore} <code className="px-1.5 py-0.5 bg-[#0C0F14] rounded font-mono text-slate-200">factorio --dump-data-raw</code> {t.database.modsDescMid1} <code className="font-mono">script-output/data-raw-dump.json</code>{t.database.modsDescMid2}<code className="font-mono">__mod__/...</code>{t.database.modsDescAfter}
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="block text-xs text-slate-300">Nome do Modpack</label>
+              <label className="block text-xs text-slate-300">{t.database.modpackNameLabel}</label>
               <input
                 type="text"
                 value={modName}
@@ -339,14 +349,14 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
               />
             </div>
             <div className="space-y-1">
-              <label className="block text-xs text-slate-300">Regras do Jogo</label>
+              <label className="block text-xs text-slate-300">{t.database.gameRulesLabel}</label>
               <select
                 value={rulesVersion}
                 onChange={(e) => setRulesVersion(e.target.value as '2.0' | '1.1')}
                 className="w-full px-3 py-1.5 text-xs bg-[#0C0F14] border border-[#28313E] rounded text-slate-100"
               >
-                <option value="2.0">Factorio 2.0 / Space Age (Beacons √n)</option>
-                <option value="1.1">Factorio 1.1 (Beacons lineares)</option>
+                <option value="2.0">{t.database.rules20}</option>
+                <option value="1.1">{t.database.rules11}</option>
               </select>
             </div>
           </div>
@@ -365,7 +375,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
             className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400"
           >
             <Upload className="w-4 h-4" />
-            Selecionar data-raw-dump.json
+            {t.database.selectDumpButton}
           </button>
 
           {importStatus && (
@@ -387,10 +397,10 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
         <div className="max-w-3xl p-6 bg-[#141920] border border-[#262F3D] rounded-md space-y-5">
           <div className="space-y-1">
             <h2 className="text-base font-semibold text-slate-100">
-              Carregar Assets & Sprites Originais do Factorio (.png)
+              {t.database.assetsTitle}
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              O aplicativo já renderiza sprites procedurais em alta fidelidade para Vanilla, Space Age e Krastorio 2. Se desejar usar as texturas oficiais da sua instalação local do jogo, selecione a pasta <code className="px-1.5 py-0.5 bg-[#0C0F14] rounded font-mono text-slate-200">Factorio/data</code> ou a pasta extraída de <code className="font-mono text-amber-400">Krastorio2Assets</code> — os ícones serão casados automaticamente por caminho <code className="font-mono">__base__</code>, <code className="font-mono">__space-age__</code> e <code className="font-mono">__Krastorio2Assets__</code> tanto nas tabelas quanto na Planta 2D!
+              {t.database.assetsDescBefore} <code className="px-1.5 py-0.5 bg-[#0C0F14] rounded font-mono text-slate-200">Factorio/data</code> {t.database.assetsDescMid1} <code className="font-mono text-amber-400">Krastorio2Assets</code> {t.database.assetsDescMid2} <code className="font-mono">__base__</code>, <code className="font-mono">__space-age__</code>, <code className="font-mono">__Krastorio2Assets__</code> {t.database.assetsDescAfter}
             </p>
           </div>
 
@@ -420,7 +430,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400"
             >
               <FolderOpen className="w-4 h-4" />
-              Selecionar Pasta de Assets (data / mods)
+              {t.database.selectAssetsFolder}
             </button>
             <button
               type="button"
@@ -428,7 +438,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-200 bg-[#1B222C] border border-[#2D3848] rounded hover:bg-[#232C39]"
             >
               <ImageIcon className="w-4 h-4" />
-              Selecionar Arquivos PNG Individuais
+              {t.database.selectPngFiles}
             </button>
             {spriteStats.totalFiles > 0 && (
               <button
@@ -437,30 +447,30 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-red-300 bg-red-950/30 border border-red-800/50 rounded hover:bg-red-950/50"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                Limpar Assets
+                {t.database.clearAssets}
               </button>
             )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 bg-[#0E1218] border border-[#222A36] rounded text-xs">
             <div>
-              <div className="text-[11px] text-slate-400">Arquivos Carregados</div>
+              <div className="text-[11px] text-slate-400">{t.database.filesLoaded}</div>
               <div className="text-base font-bold text-amber-400 font-mono tabular-nums">
                 {spriteStats.totalFiles}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-slate-400">Sprites Indexados por ID</div>
+              <div className="text-[11px] text-slate-400">{t.database.spritesIndexed}</div>
               <div className="text-base font-bold text-slate-100 font-mono tabular-nums">
                 {spriteStats.matchedByName}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-slate-400">Packs Detectados</div>
+              <div className="text-[11px] text-slate-400">{t.database.packsDetected}</div>
               <div className="text-xs font-medium text-emerald-400 mt-1">
                 {spriteStats.detectedPacks.length > 0
                   ? spriteStats.detectedPacks.join(', ')
-                  : 'Modo Vetorial Procedural Ativo'}
+                  : t.database.proceduralModeActive}
               </div>
             </div>
           </div>
@@ -468,7 +478,7 @@ export const DatabaseExplorerView: React.FC<DatabaseExplorerViewProps> = ({
           {/* Live Preview of Iconic Assets across Vanilla, Space Age & Krastorio 2 */}
           <div className="space-y-2">
             <div className="text-xs font-medium text-slate-300">
-              Pré-visualização de Ícones Ativos ({pack.name})
+              {t.database.previewTitle} ({pack.name})
             </div>
             <div className="flex flex-wrap gap-2">
               {pack.machines.slice(0, 14).map((m) => (

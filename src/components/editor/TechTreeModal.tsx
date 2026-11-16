@@ -7,6 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { Check, FlaskConical, Search, Unlock, X } from 'lucide-react';
 import type { PackIndex } from '../../data/schema.ts';
 import type { PlanConfig } from '../../engine/types.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
 interface TechTreeModalProps {
@@ -22,6 +23,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
   onUpdateConfig,
   onClose,
 }) => {
+  const { t } = useI18n();
   const [tab, setTab] = useState<'productivity' | 'unlocks'>('productivity');
   const [query, setQuery] = useState('');
 
@@ -88,10 +90,10 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
             <FlaskConical className="w-4 h-4 text-amber-400" />
             <div>
               <h3 className="text-sm font-semibold text-slate-100">
-                Árvore de Tecnologias & Pesquisas de Produtividade
+                {t.techModal.title}
               </h3>
               <p className="text-xs text-slate-400">
-                Configure bônus infinitos do Factorio 2.0 (+10%/nível) e valide receitas desbloqueadas.
+                {t.techModal.subtitle}
               </p>
             </div>
           </div>
@@ -116,7 +118,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Pesquisas de Produtividade ({prodTechs.length})
+              {t.techModal.productivityTab} ({prodTechs.length})
             </button>
             <button
               type="button"
@@ -127,7 +129,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                   : 'text-slate-300 hover:text-white'
               }`}
             >
-              Desbloqueios de Receitas ({unlockTechs.length})
+              {t.techModal.unlocksTab} ({unlockTechs.length})
             </button>
           </div>
 
@@ -141,7 +143,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37]"
               >
                 <Unlock className="w-3 h-3 text-emerald-400" />
-                Desbloquear Tudo
+                {t.techModal.unlockAll}
               </button>
               <button
                 type="button"
@@ -153,7 +155,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                 }
                 className="px-2.5 py-1 text-xs text-slate-300 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37]"
               >
-                Modo Early-Game
+                {t.techModal.earlyGameMode}
               </button>
             </div>
           )}
@@ -165,7 +167,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
             <>
               {prodTechs.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400 bg-[#0E1218] border border-[#222A36] rounded">
-                  O pack atual ({index.pack.name}) não define pesquisas infinitas de produtividade por receita. Troque para Factorio 2.0 + Space Age ou importe um dump 2.0 para configurar níveis.
+                  {t.techModal.noProdTechsBefore}{index.pack.name}{t.techModal.noProdTechsAfter}
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -196,7 +198,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                               {tech.name}
                             </div>
                             <div className="text-[11px] text-slate-400 font-mono truncate">
-                              Receitas: {bonus.recipeIds.join(', ')}
+                              {t.techModal.recipesLabel} {bonus.recipeIds.join(', ')}
                             </div>
                           </div>
                         </div>
@@ -206,7 +208,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                             +{(currentBonus * 100).toFixed(0)}%
                           </span>
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] text-slate-400">Nível</span>
+                            <span className="text-[11px] text-slate-400">{t.techModal.levelLabel}</span>
                             <input
                               type="number"
                               min={0}
@@ -240,14 +242,14 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                     type="text"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Buscar tecnologia ou receita..."
+                    placeholder={t.techModal.searchPlaceholder}
                     className="w-full pl-8 pr-3 py-1.5 text-xs bg-[#0D1117] border border-[#262F3D] rounded text-slate-100 focus:outline-none focus:border-amber-500"
                   />
                 </div>
                 <span className="text-xs text-slate-400 font-mono tabular-nums">
                   {isTechFilterActive
-                    ? `${unlockedSet.size}/${index.pack.technologies.length} pesquisadas`
-                    : 'Todas liberadas'}
+                    ? `${unlockedSet.size}/${index.pack.technologies.length} ${t.techModal.researchedCount}`
+                    : t.techModal.allUnlocked}
                 </span>
               </div>
 

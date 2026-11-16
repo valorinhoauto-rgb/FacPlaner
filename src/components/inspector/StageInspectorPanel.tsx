@@ -7,6 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Info, Lock, Plus, Trash2, Unlock } from 'lucide-react';
 import type { PackIndex } from '../../data/schema.ts';
 import type { PlanConfig, RateUnit, SolveResult, StageOverride } from '../../engine/types.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import { formatRate } from '../../state/projectsStore.ts';
 import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
@@ -31,6 +32,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
   onSelectStage,
   onUpdateConfig,
 }) => {
+  const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<'stage' | 'summary' | 'alerts'>('stage');
 
   const selectedStage = useMemo(
@@ -68,41 +70,41 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
   const warnCount = solveResult.alerts.filter((a) => a.severity === 'warning').length;
 
   return (
-    <aside className="w-full lg:w-[370px] shrink-0 flex flex-col bg-[#141920] border-l border-[#252C37] h-full overflow-hidden">
+    <aside className="w-full lg:w-[370px] shrink-0 flex flex-col bg-[#191B1F] border-l border-[#32363E] h-full overflow-hidden">
       {/* Tab Selector */}
-      <div className="grid grid-cols-3 border-b border-[#252C37] bg-[#11151B]">
+      <div className="grid grid-cols-3 border-b border-[#32363E] bg-[#15171A]">
         <button
           type="button"
           onClick={() => setActiveTab('stage')}
           className={`py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'stage'
-              ? 'border-amber-500 text-amber-400 bg-[#141920]'
+              ? 'border-amber-500 text-amber-400 bg-[#191B1F]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Etapa
+          {t.inspector.tabStage}
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('summary')}
           className={`py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'summary'
-              ? 'border-amber-500 text-amber-400 bg-[#141920]'
+              ? 'border-amber-500 text-amber-400 bg-[#191B1F]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Consolidado
+          {t.inspector.tabSummary}
         </button>
         <button
           type="button"
           onClick={() => setActiveTab('alerts')}
           className={`py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
             activeTab === 'alerts'
-              ? 'border-amber-500 text-amber-400 bg-[#141920]'
+              ? 'border-amber-500 text-amber-400 bg-[#191B1F]'
               : 'border-transparent text-slate-400 hover:text-slate-200'
           }`}
         >
-          Gargalos ({solveResult.alerts.length})
+          {t.inspector.tabAlerts} ({solveResult.alerts.length})
         </button>
       </div>
 
@@ -112,14 +114,14 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
           <>
             {!selectedStage || !selectedRecipe || !selectedMachine ? (
               <div className="text-xs text-slate-400 py-8 text-center">
-                Selecione uma etapa no grafo ou na planta 2D para configurar máquinas, receitas alternativas e módulos.
+                {t.inspector.emptyStagePrompt}
               </div>
             ) : (
               <>
                 {/* Stage Switcher */}
                 <div className="space-y-1.5">
                   <label className="block text-[11px] font-medium text-slate-400">
-                    Etapa em Inspeção
+                    {t.inspector.inspectingStage}
                   </label>
                   <select
                     value={selectedStage.id}
@@ -137,7 +139,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                 {/* Key Numbers */}
                 <div className="grid grid-cols-3 gap-2 p-2.5 bg-[#0E1218] border border-[#222A36] rounded-md text-xs">
                   <div>
-                    <div className="text-[10px] text-slate-400">Máquinas</div>
+                    <div className="text-[10px] text-slate-400">{t.inspector.machines}</div>
                     <div className="text-sm font-bold text-amber-400 font-mono tabular-nums">
                       {theoreticalMode
                         ? selectedStage.theoreticalMachines.toFixed(2)
@@ -145,13 +147,13 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400">Utilização</div>
+                    <div className="text-[10px] text-slate-400">{t.inspector.utilization}</div>
                     <div className="text-sm font-semibold text-slate-100 font-mono tabular-nums">
                       {(selectedStage.utilization * 100).toFixed(1)}%
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400">Energia</div>
+                    <div className="text-[10px] text-slate-400">{t.inspector.power}</div>
                     <div className="text-sm font-semibold text-slate-100 font-mono tabular-nums">
                       {selectedStage.powerKwTotal >= 1000
                         ? `${(selectedStage.powerKwTotal / 1000).toFixed(2)} MW`
@@ -164,7 +166,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                 {alternativeRecipes.length > 1 && (
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-medium text-slate-400">
-                      Receita Alternativa ({alternativeRecipes.length} disponíveis)
+                      {t.inspector.alternativeRecipe} ({alternativeRecipes.length} {t.inspector.availableCount})
                     </label>
                     <select
                       value={selectedRecipe.id}
@@ -194,7 +196,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                 <div className="space-y-3">
                   <div className="space-y-1.5">
                     <label className="block text-[11px] font-medium text-slate-400">
-                      Máquina de Produção
+                      {t.inspector.productionMachine}
                     </label>
                     <div className="flex items-center gap-2">
                       <ResourceIcon
@@ -214,7 +216,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                       >
                         {compatibleMachines.map((m) => (
                           <option key={m.id} value={m.id}>
-                            {m.name} (vel. {m.craftingSpeed}x · {m.moduleSlots} slots)
+                            {m.name} ({t.inspector.speedShort} {m.craftingSpeed}x · {m.moduleSlots} {t.inspector.slotsShort})
                           </option>
                         ))}
                       </select>
@@ -223,11 +225,11 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
 
                   <div className="flex items-center justify-between gap-2 p-2.5 bg-[#0E1218] border border-[#222A36] rounded-md">
                     <div className="text-xs">
-                      <div className="font-medium text-slate-200">Quantidade de Máquinas</div>
+                      <div className="font-medium text-slate-200">{t.inspector.machineCount}</div>
                       <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                         {selectedStage.isFixedCount
-                          ? `Travado em ${selectedStage.installedMachines}`
-                          : `Auto (${selectedStage.theoreticalMachines.toFixed(2)} teor.)`}
+                          ? `${t.inspector.lockedAt} ${selectedStage.installedMachines}`
+                          : `${t.inspector.autoCount} (${selectedStage.theoreticalMachines.toFixed(2)})`}
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -247,7 +249,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                           />
                           <button
                             type="button"
-                            title="Voltar para automático"
+                            title={t.inspector.backToAutoTooltip}
                             onClick={() =>
                               updateStageOverride(selectedStage.recipeId, {
                                 fixedMachineCount: undefined,
@@ -269,7 +271,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                           className="inline-flex items-center gap-1 px-2.5 py-1 text-xs text-slate-200 bg-[#1B222C] border border-[#2D3848] rounded hover:bg-[#232C39]"
                         >
                           <Lock className="w-3 h-3" />
-                          Travar
+                          {t.inspector.lockButton}
                         </button>
                       )}
                     </div>
@@ -281,10 +283,10 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-[11px] font-medium text-slate-400">
-                        Módulos ({selectedStage.moduleIds.length}/{selectedMachine.moduleSlots} slots)
+                        {t.inspector.modulesLabel} ({selectedStage.moduleIds.length}/{selectedMachine.moduleSlots} {t.inspector.slotsWord})
                       </span>
                       <span className="text-[11px] font-mono tabular-nums text-slate-400">
-                        Vel. {(selectedStage.effectiveStats.speedMultiplier * 100).toFixed(0)}% · Prod. +{(selectedStage.effectiveStats.productivityBonus * 100).toFixed(0)}%
+                        {t.inspector.speedShort} {(selectedStage.effectiveStats.speedMultiplier * 100).toFixed(0)}% · Prod. +{(selectedStage.effectiveStats.productivityBonus * 100).toFixed(0)}%
                       </span>
                     </div>
 
@@ -305,7 +307,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                               }}
                               className="flex-1 px-2 py-1 text-xs bg-[#0D1117] border border-[#28313E] rounded text-slate-200"
                             >
-                              <option value="">Slot {slotIdx + 1} vazio</option>
+                              <option value="">{t.inspector.emptySlot} #{slotIdx + 1}</option>
                               {index.pack.modules.map((m) => (
                                 <option key={m.id} value={m.id}>
                                   {m.name}
@@ -335,7 +337,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                 <div className="space-y-2 p-2.5 bg-[#0E1218] border border-[#222A36] rounded-md">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-medium text-slate-300">
-                      Beacons por Máquina ({index.pack.rulesVersion === '2.0' ? '2.0 √n' : '1.1'})
+                      {t.inspector.beaconsPerMachine} ({index.pack.rulesVersion === '2.0' ? '2.0 √n' : '1.1'})
                     </span>
                     <input
                       type="number"
@@ -377,7 +379,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                         >
                           {index.pack.beacons.map((b) => (
                             <option key={b.id} value={b.id}>
-                              {b.name} (eff. {(b.distributionEffectivity * 100).toFixed(0)}%)
+                              {b.name} ({t.inspector.effShort} {(b.distributionEffectivity * 100).toFixed(0)}%)
                             </option>
                           ))}
                         </select>
@@ -399,7 +401,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                           .filter((m) => m.category !== 'productivity')
                           .map((m) => (
                             <option key={m.id} value={m.id}>
-                              2× {m.name} por Beacon
+                              2× {m.name} {t.inspector.perBeaconSuffix}
                             </option>
                           ))}
                       </select>
@@ -421,22 +423,24 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                     }}
                     className="w-full px-3 py-1.5 text-xs font-medium text-slate-300 bg-[#1A2029] border border-[#28313E] rounded hover:text-white hover:border-slate-500 transition-colors"
                   >
-                    Marcar "{index.resourcesById.get(selectedRecipe.mainProductId)?.name}" como Entrada Bruta (Main Bus)
+                    {t.inspector.markRawButtonPrefix}
+                    {index.resourcesById.get(selectedRecipe.mainProductId)?.name}
+                    {t.inspector.markRawButtonSuffix}
                   </button>
                 </div>
 
                 {/* Inputs & Outputs Breakdown Table */}
                 <div className="space-y-2 pt-2 border-t border-[#222A36]">
                   <h4 className="text-xs font-semibold text-slate-200">
-                    Entradas e Saídas da Etapa
+                    {t.inspector.stageIoTitle}
                   </h4>
                   <table className="w-full text-[11px] border-collapse">
                     <thead>
                       <tr className="text-slate-400 border-b border-[#222A36]">
-                        <th className="text-left py-1 font-medium">Item</th>
-                        <th className="text-right py-1 font-medium">Por Máq.</th>
-                        <th className="text-right py-1 font-medium">Total</th>
-                        <th className="text-right py-1 font-medium">Esteiras</th>
+                        <th className="text-left py-1 font-medium">{t.inspector.colItem}</th>
+                        <th className="text-right py-1 font-medium">{t.inspector.colPerMachine}</th>
+                        <th className="text-right py-1 font-medium">{t.inspector.colTotal}</th>
+                        <th className="text-right py-1 font-medium">{t.inspector.colBelts}</th>
                       </tr>
                     </thead>
                     <tbody className="font-mono tabular-nums">
@@ -461,7 +465,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                               {formatRate(totalRate, rateUnit)}
                             </td>
                             <td className="text-right text-slate-400">
-                              {inp.kind === 'fluid' ? 'Tubo' : `${(belts ?? 0).toFixed(2)}`}
+                              {inp.kind === 'fluid' ? t.inspector.pipeLabel : `${(belts ?? 0).toFixed(2)}`}
                             </td>
                           </tr>
                         );
@@ -487,7 +491,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                               {formatRate(totalRate, rateUnit)}
                             </td>
                             <td className="text-right text-emerald-300/80">
-                              {out.kind === 'fluid' ? 'Tubo' : `${(belts ?? 0).toFixed(2)}`}
+                              {out.kind === 'fluid' ? t.inspector.pipeLabel : `${(belts ?? 0).toFixed(2)}`}
                             </td>
                           </tr>
                         );
@@ -505,15 +509,15 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
             {/* Global Energy & Solver Mode */}
             <div className="grid grid-cols-2 gap-2 p-3 bg-[#0E1218] border border-[#222A36] rounded-md text-xs">
               <div>
-                <div className="text-[11px] text-slate-400">Energia Estimada</div>
+                <div className="text-[11px] text-slate-400">{t.inspector.estimatedPower}</div>
                 <div className="text-base font-bold text-amber-400 font-mono tabular-nums">
                   {(solveResult.totalPowerKw / 1000).toFixed(2)} MW
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-slate-400">Motor Ativo</div>
+                <div className="text-[11px] text-slate-400">{t.inspector.activeSolver}</div>
                 <div className="text-sm font-semibold text-slate-100">
-                  {solveResult.solverUsed === 'hybrid-matrix' ? 'Simplex LP + DAG' : 'DAG Direto'}
+                  {solveResult.solverUsed === 'hybrid-matrix' ? t.inspector.solverHybrid : t.inspector.solverDag}
                 </div>
               </div>
             </div>
@@ -522,7 +526,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-semibold text-slate-200">
-                  Recursos Brutos Necessários
+                  {t.inspector.rawResourcesRequired}
                 </h4>
                 {(config.rawResourceOverrides?.length ?? 0) > 0 && (
                   <button
@@ -532,16 +536,16 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                     }
                     className="text-[11px] text-amber-400 hover:underline"
                   >
-                    Restaurar minérios
+                    {t.inspector.restoreOres}
                   </button>
                 )}
               </div>
               <table className="w-full text-xs border-collapse">
                 <thead>
                   <tr className="text-[11px] text-slate-400 border-b border-[#222A36]">
-                    <th className="text-left py-1 font-medium">Recurso</th>
-                    <th className="text-right py-1 font-medium">Taxa</th>
-                    <th className="text-right py-1 font-medium">Esteiras</th>
+                    <th className="text-left py-1 font-medium">{t.inspector.colResource}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colRate}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colBelts}</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -558,7 +562,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                         </td>
                         <td className="text-right text-slate-100">{formatRate(rate, rateUnit)}</td>
                         <td className="text-right text-slate-400">
-                          {r.kind === 'fluid' ? 'Tubo' : r.beltsRequired.toFixed(2)}
+                          {r.kind === 'fluid' ? t.inspector.pipeLabel : r.beltsRequired.toFixed(2)}
                         </td>
                       </tr>
                     );
@@ -569,13 +573,13 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
 
             {/* Consolidated Machines */}
             <div className="space-y-2">
-              <h4 className="text-xs font-semibold text-slate-200">Lista de Máquinas</h4>
+              <h4 className="text-xs font-semibold text-slate-200">{t.inspector.machineListTitle}</h4>
               <table className="w-full text-xs border-collapse">
                 <thead>
                   <tr className="text-[11px] text-slate-400 border-b border-[#222A36]">
-                    <th className="text-left py-1 font-medium">Equipamento</th>
-                    <th className="text-right py-1 font-medium">Teórico</th>
-                    <th className="text-right py-1 font-medium">Instalar</th>
+                    <th className="text-left py-1 font-medium">{t.inspector.colEquipment}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colTheoretical}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colInstall}</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -593,14 +597,14 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
             {/* Intermediates */}
             <div className="space-y-2">
               <h4 className="text-xs font-semibold text-slate-200">
-                Produtos Intermediários & Excedentes
+                {t.inspector.intermediatesTitle}
               </h4>
               <table className="w-full text-[11px] border-collapse">
                 <thead>
                   <tr className="text-slate-400 border-b border-[#222A36]">
-                    <th className="text-left py-1 font-medium">Item</th>
-                    <th className="text-right py-1 font-medium">Produção</th>
-                    <th className="text-right py-1 font-medium">Saldo</th>
+                    <th className="text-left py-1 font-medium">{t.inspector.colItem}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colProduction}</th>
+                    <th className="text-right py-1 font-medium">{t.inspector.colBalance}</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono tabular-nums">
@@ -627,7 +631,7 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                             ? `-${formatRate(inter.deficitPerSec, rateUnit)}`
                             : inter.surplusPerSec > 0.05
                               ? `+${formatRate(inter.surplusPerSec, rateUnit)}`
-                              : 'Exato'}
+                              : t.inspector.exactBalance}
                         </td>
                       </tr>
                     );
@@ -641,19 +645,19 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
         {activeTab === 'alerts' && (
           <div className="space-y-3">
             <div className="text-xs text-slate-400 flex items-center gap-2">
-              <span>{errorCount} críticos</span>
+              <span>{errorCount} {t.inspector.criticalWord}</span>
               <span aria-hidden="true">·</span>
-              <span>{warnCount} avisos</span>
+              <span>{warnCount} {t.inspector.warningsWord}</span>
             </div>
 
             {solveResult.alerts.length === 0 ? (
               <div className="p-6 text-center bg-[#0E1218] border border-[#222A36] rounded-md space-y-2">
                 <CheckCircle2 className="w-6 h-6 text-emerald-500 mx-auto" />
                 <div className="text-xs font-medium text-slate-200">
-                  Linha de Produção Balanceada
+                  {t.inspector.balancedTitle}
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Nenhum gargalo de máquinas, falta de ingredientes ou saturação de esteira detectado.
+                  {t.inspector.balancedDesc}
                 </p>
               </div>
             ) : (
@@ -695,13 +699,13 @@ export const StageInspectorPanel: React.FC<StageInspectorPanelProps> = ({
                           }}
                           className="text-[11px] text-amber-400 hover:underline shrink-0"
                         >
-                          Focar etapa
+                          {t.inspector.focusStage}
                         </button>
                       )}
                     </div>
                     <p className="text-slate-200 leading-relaxed">{alert.message}</p>
                     <p className="text-[11px] text-slate-400">
-                      Sugestão: {alert.suggestion}
+                      {t.inspector.suggestionPrefix} {alert.suggestion}
                     </p>
                   </div>
                 );

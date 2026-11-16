@@ -839,7 +839,7 @@ export const SPACE_AGE_2_0_PACK: GameDataPack = {
     // Infinite Recipe Productivity Technologies in Factorio 2.0
     {
       id: 'steel-plate-productivity',
-      name: 'Steel Plate Productivity (+10%/nível)',
+      name: 'Steel Plate Productivity (+10%/lvl)',
       prerequisites: ['metallurgic-science-pack'],
       unlockedRecipes: [],
       recipeProductivityBonus: {
@@ -850,7 +850,7 @@ export const SPACE_AGE_2_0_PACK: GameDataPack = {
     },
     {
       id: 'plastic-bar-productivity',
-      name: 'Plastic Bar Productivity (+10%/nível)',
+      name: 'Plastic Bar Productivity (+10%/lvl)',
       prerequisites: ['plastics'],
       unlockedRecipes: [],
       recipeProductivityBonus: {
@@ -861,7 +861,7 @@ export const SPACE_AGE_2_0_PACK: GameDataPack = {
     },
     {
       id: 'processing-unit-productivity',
-      name: 'Processing Unit Productivity (+10%/nível)',
+      name: 'Processing Unit Productivity (+10%/lvl)',
       prerequisites: ['electromagnetic-science-pack'],
       unlockedRecipes: [],
       recipeProductivityBonus: {
@@ -872,7 +872,7 @@ export const SPACE_AGE_2_0_PACK: GameDataPack = {
     },
     {
       id: 'low-density-structure-productivity',
-      name: 'LDS Productivity (+10%/nível)',
+      name: 'LDS Productivity (+10%/lvl)',
       prerequisites: ['metallurgic-science-pack'],
       unlockedRecipes: [],
       recipeProductivityBonus: {
@@ -883,7 +883,7 @@ export const SPACE_AGE_2_0_PACK: GameDataPack = {
     },
     {
       id: 'rocket-fuel-productivity',
-      name: 'Rocket Fuel Productivity (+10%/nível)',
+      name: 'Rocket Fuel Productivity (+10%/lvl)',
       prerequisites: ['rocket-fuel'],
       unlockedRecipes: [],
       recipeProductivityBonus: {

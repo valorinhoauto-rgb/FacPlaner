@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { spritePackStore } from '../../assets/spritePackStore.ts';
 import type { Direction, PackIndex } from '../../data/schema.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import type {
   GridEntity,
   GridEntityKind,
@@ -65,13 +66,6 @@ interface BlueprintGridCanvasProps {
   onChangeLayoutOptions?: (patch: Partial<LayoutSynthesisOptions>) => void;
 }
 
-const DIRECTION_LABEL: Record<Direction, string> = {
-  0: 'Norte',
-  4: 'Leste',
-  8: 'Sul',
-  12: 'Oeste',
-};
-
 function rotateDir(dir: Direction): Direction {
   return (((dir + 4) % 16) as Direction);
 }
@@ -108,6 +102,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   onToggleCompaction,
   onChangeLayoutOptions,
 }) => {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -444,7 +439,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       const height = rect.height;
 
       // Background
-      ctx.fillStyle = '#0D1117';
+      ctx.fillStyle = '#121316';
       ctx.fillRect(0, 0, width, height);
 
       const tSec = animateFlow ? timeMs / 1000 : 0;
@@ -460,7 +455,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         ctx.lineWidth = 1;
         for (let tx = startTileX; tx <= endTileX; tx++) {
           const sx = Math.floor(pan.x + tx * zoom) + 0.5;
-          ctx.strokeStyle = tx % 5 === 0 ? '#1D2532' : '#141922';
+          ctx.strokeStyle = tx % 5 === 0 ? '#23262C' : '#181A1F';
           ctx.beginPath();
           ctx.moveTo(sx, 0);
           ctx.lineTo(sx, height);
@@ -468,7 +463,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         }
         for (let ty = startTileY; ty <= endTileY; ty++) {
           const sy = Math.floor(pan.y + ty * zoom) + 0.5;
-          ctx.strokeStyle = ty % 5 === 0 ? '#1D2532' : '#141922';
+          ctx.strokeStyle = ty % 5 === 0 ? '#23262C' : '#181A1F';
           ctx.beginPath();
           ctx.moveTo(0, sy);
           ctx.lineTo(width, sy);
@@ -956,9 +951,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     return encodeBlueprintString(
       entities,
       projectName,
-      'Gerado pelo Factorio Production Planner'
+      t.canvas.generatedBy
     );
-  }, [blueprintModalOpen, entities, projectName]);
+  }, [blueprintModalOpen, entities, projectName, t.canvas.generatedBy]);
 
   const blueprintJson = useMemo(() => {
     if (!blueprintModalOpen || !showRawJson) return '';
@@ -980,7 +975,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     try {
       const parsed = parseBlueprintToEntities(importText, index);
       if (parsed.entities.length === 0) {
-        setImportError('A blueprint decodificada não possui entidades.');
+        setImportError(t.canvas.emptyBlueprintError);
         return;
       }
       onChangeEntities(parsed.entities);
@@ -1004,27 +999,27 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         });
       }
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'String 0eN... inválida.');
+      setImportError(err instanceof Error ? err.message : t.canvas.invalidBlueprintError);
     }
   };
 
   return (
-    <div className="relative flex flex-col w-full h-full bg-[#0D1117]">
+    <div className="relative flex flex-col w-full h-full bg-[#121316]">
       {/* Top FBE-style Canvas Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#141920] border-b border-[#252C37]">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#181A1E] border-b border-[#32363E]">
         <div className="flex items-center gap-1 overflow-x-auto">
           {[
-            { id: 'select', label: 'Selecionar', icon: MousePointer2 },
-            { id: 'pan', label: 'Mover Mapa', icon: Hand },
-            { id: 'place-belt', label: 'Esteira' },
-            { id: 'place-underground', label: 'Subterrânea' },
-            { id: 'place-splitter', label: 'Divisor' },
-            { id: 'place-inserter', label: 'Insertor' },
-            { id: 'place-long-inserter', label: 'Insertor Longo' },
-            { id: 'place-pipe', label: 'Tubo' },
-            { id: 'place-beacon', label: 'Beacon' },
-            { id: 'place-pole', label: 'Poste' },
-            { id: 'erase', label: 'Apagar', icon: Eraser },
+            { id: 'select', label: t.canvas.tools.select, icon: MousePointer2 },
+            { id: 'pan', label: t.canvas.tools.pan, icon: Hand },
+            { id: 'place-belt', label: t.canvas.tools.belt },
+            { id: 'place-underground', label: t.canvas.tools.underground },
+            { id: 'place-splitter', label: t.canvas.tools.splitter },
+            { id: 'place-inserter', label: t.canvas.tools.inserter },
+            { id: 'place-long-inserter', label: t.canvas.tools.longInserter },
+            { id: 'place-pipe', label: t.canvas.tools.pipe },
+            { id: 'place-beacon', label: t.canvas.tools.beacon },
+            { id: 'place-pole', label: t.canvas.tools.pole },
+            { id: 'erase', label: t.canvas.tools.erase, icon: Eraser },
           ].map((item) => {
             const Icon = item.icon;
             const active = tool === item.id;
@@ -1035,8 +1030,8 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                 onClick={() => setTool(item.id as EditorTool)}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
                   active
-                    ? 'bg-amber-500 text-slate-950 font-semibold'
-                    : 'bg-[#1A2029] text-slate-300 hover:bg-[#232B37] hover:text-white'
+                    ? 'bg-amber-500 text-slate-950 font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]'
+                    : 'bg-[#23252B] text-slate-300 hover:bg-[#2C2F36] hover:text-white border border-[#32363E]'
                 }`}
               >
                 {Icon && <Icon className="w-3.5 h-3.5" />}
@@ -1050,11 +1045,11 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           <button
             type="button"
             onClick={handleRotateSelectedOrPreview}
-            title="Rotacionar (R)"
+            title={t.canvas.rotateTooltip}
             className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37] whitespace-nowrap"
           >
             <RotateCw className="w-3.5 h-3.5 text-amber-400" />
-            {DIRECTION_LABEL[selectedEntity ? selectedEntity.direction : placeDirection]}
+            {t.canvas.directions[selectedEntity ? selectedEntity.direction : placeDirection]}
           </button>
 
           {onChangeLayoutOptions && (
@@ -1072,7 +1067,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                     : 'bg-[#1A2029] border-[#28313E] text-slate-400'
                 }`}
               >
-                Beacons
+                {t.canvas.beacons}
               </button>
               <button
                 type="button"
@@ -1087,7 +1082,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                     : 'bg-[#1A2029] border-[#28313E] text-slate-400'
                 }`}
               >
-                Postes
+                {t.canvas.poles}
               </button>
               <button
                 type="button"
@@ -1096,14 +1091,14 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                     directInsertion: !(layoutOptions?.directInsertion ?? false),
                   })
                 }
-                title="Acopla máquinas que alimentam apenas 1 etapa (ex: Cabo de Cobre -> Circuito Verde) sem esteira intermediária"
+                title={t.canvas.directInsertionTooltip}
                 className={`px-2 py-1.5 text-xs font-medium rounded border whitespace-nowrap ${
                   layoutOptions?.directInsertion
                     ? 'bg-[#1E293B] border-emerald-500/60 text-emerald-300'
                     : 'bg-[#1A2029] border-[#28313E] text-slate-400'
                 }`}
               >
-                Inserção Direta
+                {t.canvas.directInsertion}
               </button>
             </>
           )}
@@ -1113,7 +1108,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             onClick={() => onToggleCompaction(compactionMode === 'compact' ? 'standard' : 'compact')}
             className="px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37] whitespace-nowrap"
           >
-            {compactionMode === 'compact' ? 'Espaço: Compacto' : 'Espaço: Padrão'}
+            {compactionMode === 'compact' ? t.canvas.spaceCompact : t.canvas.spaceStandard}
           </button>
 
           <button
@@ -1122,7 +1117,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37] whitespace-nowrap"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            Auto-Layout
+            {t.canvas.autoLayout}
           </button>
 
           <button
@@ -1134,7 +1129,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-200 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37] whitespace-nowrap"
           >
             <Download className="w-3.5 h-3.5 text-sky-400" />
-            Importar (0eN)
+            {t.canvas.importBp}
           </button>
 
           <button
@@ -1143,7 +1138,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 whitespace-nowrap"
           >
             <Share2 className="w-3.5 h-3.5" />
-            Exportar Blueprint (0eN)
+            {t.canvas.exportBp}
           </button>
         </div>
       </div>
@@ -1175,23 +1170,23 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                 onClick={handleDeleteSelected}
                 className="text-red-400 hover:text-red-300 text-[11px]"
               >
-                Remover
+                {t.canvas.removeEntity}
               </button>
             </div>
             <div className="text-slate-400 font-mono tabular-nums">
-              Pos ({selectedEntity.tileX}, {selectedEntity.tileY}) · {selectedEntity.width}×{selectedEntity.height} · {DIRECTION_LABEL[selectedEntity.direction]}
+              Pos ({selectedEntity.tileX}, {selectedEntity.tileY}) · {selectedEntity.width}×{selectedEntity.height} · {t.canvas.directions[selectedEntity.direction]}
             </div>
             {selectedEntity.recipeId && (
-              <div className="text-amber-400">Receita: {selectedEntity.recipeId}</div>
+              <div className="text-amber-400">{t.canvas.recipeLabel} {selectedEntity.recipeId}</div>
             )}
             {selectedEntity.beltLanes && (
               <div className="text-slate-300">
-                Faixas: {selectedEntity.beltLanes.left ?? '—'} | {selectedEntity.beltLanes.right ?? '—'}
+                {t.canvas.lanesLabel} {selectedEntity.beltLanes.left ?? '—'} | {selectedEntity.beltLanes.right ?? '—'}
               </div>
             )}
             {selectedEntity.inserterItems && (
               <div className="text-slate-300">
-                Move: {selectedEntity.inserterItems.join(', ')} (alcance {selectedEntity.inserterReach ?? 1}t)
+                {t.canvas.movesLabel} {selectedEntity.inserterItems.join(', ')} ({t.canvas.reachUnit} {selectedEntity.inserterReach ?? 1}t)
               </div>
             )}
           </div>
@@ -1201,7 +1196,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         <div className="absolute bottom-3 right-3 flex items-center gap-1 p-1 bg-[#141920] border border-[#262F3D] rounded-md">
           <button
             type="button"
-            title={animateFlow ? 'Pausar animação' : 'Animar fluxo'}
+            title={animateFlow ? t.canvas.pauseAnim : t.canvas.playAnim}
             onClick={() => setAnimateFlow((v) => !v)}
             className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
           >
@@ -1209,7 +1204,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           </button>
           <button
             type="button"
-            title="Diminuir zoom"
+            title={t.canvas.zoomOut}
             onClick={() => setZoom((z) => Math.max(7, z * 0.85))}
             className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
           >
@@ -1217,7 +1212,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           </button>
           <button
             type="button"
-            title="Ajustar à tela (F)"
+            title={t.canvas.fitToScreen}
             onClick={fitToView}
             className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
           >
@@ -1225,7 +1220,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           </button>
           <button
             type="button"
-            title="Aumentar zoom"
+            title={t.canvas.zoomIn}
             onClick={() => setZoom((z) => Math.min(64, z * 1.15))}
             className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
           >
@@ -1238,11 +1233,11 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-2 bg-[#141920] border-t border-[#252C37] text-xs text-slate-400 font-mono tabular-nums">
         <div className="flex flex-wrap items-center gap-3">
           <span>
-            Dimensão: <strong className="text-slate-100">{liveStats.stats.widthTiles}×{liveStats.stats.heightTiles}</strong> tiles ({liveStats.stats.totalAreaTiles} m²)
+            {t.canvas.boundsLabel} <strong className="text-slate-100">{liveStats.stats.widthTiles}×{liveStats.stats.heightTiles}</strong> {t.canvas.tilesUnit} ({liveStats.stats.totalAreaTiles} m²)
           </span>
           <span aria-hidden="true">·</span>
           <span>
-            Ocupação: <strong className="text-emerald-400">{liveStats.stats.spaceUtilizationPct.toFixed(1)}%</strong>
+            {t.canvas.occupancyLabel} <strong className="text-emerald-400">{liveStats.stats.spaceUtilizationPct.toFixed(1)}%</strong>
           </span>
           {hoverTile && (
             <>
@@ -1252,14 +1247,14 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <span>Máquinas: <strong className="text-slate-200">{liveStats.stats.machineCount}</strong></span>
-          <span>Esteiras: <strong className="text-slate-200">{liveStats.stats.beltCount}</strong></span>
-          <span>Subterrâneas: <strong className="text-slate-200">{liveStats.stats.undergroundCount}</strong></span>
-          <span>Divisores: <strong className="text-slate-200">{liveStats.stats.splitterCount}</strong></span>
-          <span>Insertores: <strong className="text-slate-200">{liveStats.stats.inserterCount}</strong></span>
-          <span>Tubos: <strong className="text-slate-200">{liveStats.stats.pipeCount}</strong></span>
-          <span>Beacons: <strong className="text-slate-200">{liveStats.stats.beaconCount}</strong></span>
-          <span>Postes: <strong className="text-slate-200">{liveStats.stats.poleCount}</strong></span>
+          <span>{t.canvas.machinesLabel} <strong className="text-slate-200">{liveStats.stats.machineCount}</strong></span>
+          <span>{t.canvas.beltsLabel} <strong className="text-slate-200">{liveStats.stats.beltCount}</strong></span>
+          <span>{t.canvas.undergroundsLabel} <strong className="text-slate-200">{liveStats.stats.undergroundCount}</strong></span>
+          <span>{t.canvas.splittersLabel} <strong className="text-slate-200">{liveStats.stats.splitterCount}</strong></span>
+          <span>{t.canvas.insertersLabel} <strong className="text-slate-200">{liveStats.stats.inserterCount}</strong></span>
+          <span>{t.canvas.pipesLabel} <strong className="text-slate-200">{liveStats.stats.pipeCount}</strong></span>
+          <span>{t.canvas.beaconsLabel} <strong className="text-slate-200">{liveStats.stats.beaconCount}</strong></span>
+          <span>{t.canvas.polesLabel} <strong className="text-slate-200">{liveStats.stats.poleCount}</strong></span>
         </div>
       </div>
 
@@ -1270,10 +1265,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#252C37]">
               <div>
                 <h3 className="text-base font-semibold text-slate-100">
-                  Exportar Blueprint String (Factorio 2.0)
+                  {t.canvas.exportModalTitle}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Cole esta string diretamente no jogo em Importar String (Ctrl+V).
+                  {t.canvas.exportModalSubtitle}
                 </p>
               </div>
               <button
@@ -1295,7 +1290,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                       !showRawJson ? 'bg-[#1D2532] text-white font-medium' : 'text-slate-400'
                     }`}
                   >
-                    String (0eN...)
+                    {t.canvas.stringTab}
                   </button>
                   <button
                     type="button"
@@ -1304,7 +1299,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                       showRawJson ? 'bg-[#1D2532] text-white font-medium' : 'text-slate-400'
                     }`}
                   >
-                    JSON Decodificado
+                    {t.canvas.decodedJsonTab}
                   </button>
                 </div>
 
@@ -1314,7 +1309,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                   className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400"
                 >
                   {copiedBp ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copiedBp ? 'Copiado' : 'Copiar String'}
+                  {copiedBp ? t.canvas.copied : t.canvas.copyString}
                 </button>
               </div>
 
@@ -1336,10 +1331,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#252C37]">
               <div>
                 <h3 className="text-base font-semibold text-slate-100">
-                  Importar Blueprint String (0eN...) para a Planta 2D
+                  {t.canvas.importModalTitle}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Cole qualquer string do Factorio 1.1, 2.0, Space Age ou Factorio School para visualizar e editar na grade.
+                  {t.canvas.importModalSubtitle}
                 </p>
               </div>
               <button
@@ -1372,7 +1367,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                   onClick={() => setImportModalOpen(false)}
                   className="px-3 py-1.5 text-xs text-slate-300 bg-[#1A2029] border border-[#28313E] rounded hover:bg-[#232B37]"
                 >
-                  Cancelar
+                  {t.canvas.cancel}
                 </button>
                 <button
                   type="button"
@@ -1380,7 +1375,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                   disabled={!importText.trim()}
                   className="px-4 py-1.5 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 disabled:opacity-50"
                 >
-                  Decodificar e Carregar na Grade
+                  {t.canvas.decodeAndLoad}
                 </button>
               </div>
             </div>

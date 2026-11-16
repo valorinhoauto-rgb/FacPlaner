@@ -176,16 +176,22 @@ function inferGroupIdFromSubgroup(subgroupId: string): string {
  * Supports built-in packs (Vanilla 2.0, Space Age, Krastorio 2) AND arbitrary
  * imported `data-raw-dump.json` modpacks with custom `item-group`/`item-subgroup`.
  */
-export function buildCraftableGroupCatalog(index: PackIndex): CatalogGroup[] {
+export function buildCraftableGroupCatalog(
+  index: PackIndex,
+  groupNames: Record<string, string> = GROUP_NAME_PT
+): CatalogGroup[] {
   const groupDefs = new Map<string, ItemGroupDef>();
   for (const g of DEFAULT_GROUPS) {
-    groupDefs.set(g.id, { ...g });
+    groupDefs.set(g.id, {
+      ...g,
+      name: groupNames[g.id] ?? g.name,
+    });
   }
   for (const g of index.pack.itemGroups ?? []) {
     const existing = groupDefs.get(g.id);
     groupDefs.set(g.id, {
       id: g.id,
-      name: GROUP_NAME_PT[g.id] ?? (existing?.name ?? g.name),
+      name: groupNames[g.id] ?? (existing?.name ?? g.name),
       order: g.order || existing?.order || 'm',
       iconPath: g.iconPath ?? existing?.iconPath,
       fallbackIconId: existing?.fallbackIconId,
@@ -260,7 +266,7 @@ export function buildCraftableGroupCatalog(index: PackIndex): CatalogGroup[] {
   for (const [groupId, sgMap] of bucketsByGroup.entries()) {
     const def = groupDefs.get(groupId) ?? {
       id: groupId,
-      name: GROUP_NAME_PT[groupId] ?? groupId,
+      name: groupNames[groupId] ?? groupId,
       order: 'z',
     };
 

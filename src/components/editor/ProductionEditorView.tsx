@@ -5,9 +5,11 @@
 
 import React, { useMemo, useState } from 'react';
 import { Columns, Cpu, FlaskConical, GitBranch, Grid, Plus, Trash2 } from 'lucide-react';
+import factorioLogo from '../../assets/images/factorio_planner_logo_1794839939049.jpg';
 import { packRegistry } from '../../data/packRegistry.ts';
 import { solveProductionPlan } from '../../engine/solver.ts';
 import type { PlanConfig, RateUnit } from '../../engine/types.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import { synthesizeFactoryLayout } from '../../spatial/layoutSynthesizer.ts';
 import type { GridEntity } from '../../spatial/types.ts';
 import {
@@ -34,6 +36,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   onUpdateProject,
   onOpenAssetsImport,
 }) => {
+  const { t } = useI18n();
   const [viewMode, setViewMode] = useState<EditorViewMode>('spatial');
   const [theoreticalMode, setTheoreticalMode] = useState(false);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
@@ -85,7 +88,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   return (
     <div className="flex flex-col h-[calc(100vh-57px)] overflow-hidden">
       {/* Editor Configuration Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#12161D] border-b border-[#252C37]">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#1B1D21] border-b border-[#32363E]">
         <div className="flex flex-wrap items-center gap-3">
           {/* Project Name */}
           <input
@@ -98,7 +101,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 updatedAt: new Date().toISOString(),
               }))
             }
-            className="w-52 px-2.5 py-1.5 text-xs font-semibold bg-[#0C0F14] border border-[#262F3D] rounded text-slate-100 focus:outline-none focus:border-amber-500"
+            className="w-52 px-2.5 py-1.5 text-xs font-semibold bg-[#121316] border border-[#343841] rounded text-slate-100 focus:outline-none focus:border-amber-500"
           />
 
           {/* Primary Target Picker */}
@@ -107,10 +110,10 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               type="button"
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => setPickerMode((m) => (m === 'primary' ? null : 'primary'))}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded whitespace-nowrap transition-colors ${
+              className={`inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded whitespace-nowrap factorio-bevel transition-colors ${
                 primaryTarget
-                  ? 'bg-[#181E27] border border-[#2C3748] hover:border-amber-500/70 text-slate-100'
-                  : 'bg-amber-500/15 border border-amber-500/60 hover:bg-amber-500/25 text-amber-300'
+                  ? 'bg-[#25272D] border border-[#3A3E48] hover:border-amber-500/70 text-slate-100'
+                  : 'bg-amber-500/15 border border-amber-500/65 hover:bg-amber-500/25 text-amber-300'
               }`}
             >
               {primaryTarget ? (
@@ -118,7 +121,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               ) : (
                 <Plus className="w-3.5 h-3.5 text-amber-400" />
               )}
-              <span>{primaryRes?.name ?? primaryTarget?.itemId ?? 'Escolher o que produzir'}</span>
+              <span>{primaryRes?.name ?? primaryTarget?.itemId ?? t.editor.chooseProductButton}</span>
             </button>
 
             {pickerMode === 'primary' && (
@@ -126,7 +129,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 <FactorioCraftingPicker
                   index={index}
                   selectedItemId={primaryTarget?.itemId}
-                  title="O que produzir (Produto Principal)"
+                  title={t.editor.pickerPrimaryTitle}
                   onOpenAssetsImport={() => {
                     setPickerMode(null);
                     onOpenAssetsImport?.();
@@ -181,9 +184,9 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 }
                 className="px-2 py-1.5 text-xs bg-[#181E27] border border-l-0 border-[#262F3D] rounded-r text-slate-200 focus:outline-none"
               >
-                <option value="per_second">/segundo</option>
-                <option value="per_minute">/minuto</option>
-                <option value="per_hour">/hora</option>
+                <option value="per_second">{t.editor.unitPerSecond}</option>
+                <option value="per_minute">{t.editor.unitPerMinute}</option>
+                <option value="per_hour">{t.editor.unitPerHour}</option>
               </select>
             </div>
           )}
@@ -198,7 +201,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
           >
             {index.pack.belts.map((b) => (
               <option key={b.id} value={b.id}>
-                {b.name} ({b.throughputPerSec}/s)
+                {b.name} ({b.throughputPerSec}{t.editor.unitShortSecond})
               </option>
             ))}
           </select>
@@ -248,7 +251,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-[#181E27] border border-[#28313E] rounded text-slate-200 hover:border-amber-500/70 hover:text-white whitespace-nowrap shrink-0"
           >
             <FlaskConical className="w-3.5 h-3.5 text-amber-400" />
-            <span>Tecnologias</span>
+            <span>{t.editor.technologies}</span>
             {Object.keys(project.config.researchProductivityBonuses ?? {}).length > 0 && (
               <span className="font-mono tabular-nums text-emerald-400">
                 +{Object.keys(project.config.researchProductivityBonuses ?? {}).length}
@@ -259,32 +262,32 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
 
         {/* Right Controls: Theoretical vs Real + Dual View Switcher */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="flex items-center p-0.5 bg-[#0C0F14] border border-[#252C37] rounded">
+          <div className="flex items-center p-0.5 bg-[#121316] border border-[#32363E] rounded">
             <button
               type="button"
               onClick={() => setTheoreticalMode(false)}
               className={`px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
                 !theoreticalMode
-                  ? 'bg-[#1D2430] text-slate-100 font-medium'
+                  ? 'bg-[#262930] text-slate-100 font-medium'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Fábrica Real
+              {t.editor.realFactory}
             </button>
             <button
               type="button"
               onClick={() => setTheoreticalMode(true)}
               className={`px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
                 theoreticalMode
-                  ? 'bg-[#1D2430] text-slate-100 font-medium'
+                  ? 'bg-[#262930] text-slate-100 font-medium'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Teórico
+              {t.editor.theoretical}
             </button>
           </div>
 
-          <div className="flex items-center p-0.5 bg-[#0C0F14] border border-[#252C37] rounded">
+          <div className="flex items-center p-0.5 bg-[#121316] border border-[#32363E] rounded">
             <button
               type="button"
               onClick={() => setViewMode('spatial')}
@@ -295,7 +298,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               }`}
             >
               <Grid className="w-3.5 h-3.5" />
-              Planta 2D
+              {t.editor.spatialView}
             </button>
             <button
               type="button"
@@ -307,7 +310,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               }`}
             >
               <GitBranch className="w-3.5 h-3.5" />
-              Fluxograma
+              {t.editor.flowView}
             </button>
             <button
               type="button"
@@ -319,7 +322,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               }`}
             >
               <Columns className="w-3.5 h-3.5" />
-              Dividido
+              {t.editor.splitView}
             </button>
           </div>
         </div>
@@ -330,16 +333,20 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
         <div className="flex items-center gap-3 px-4 py-1.5 bg-[#10141A] border-b border-[#1E2530] text-[11px] text-slate-400 overflow-x-auto">
           <span className="inline-flex items-center gap-1 text-slate-300 shrink-0">
             <Cpu className="w-3.5 h-3.5 text-amber-400" />
-            Metas ativas:
+            {t.editor.activeTargets}
           </span>
-          {project.config.targets.map((t, idx) => {
-            const res = index.resourcesById.get(t.itemId);
+          {project.config.targets.map((tgt, idx) => {
+            const res = index.resourcesById.get(tgt.itemId);
             return (
-              <div key={`${t.itemId}-${idx}`} className="inline-flex items-center gap-1.5 shrink-0">
-                <span className="text-slate-200">{res?.name ?? t.itemId}</span>
+              <div key={`${tgt.itemId}-${idx}`} className="inline-flex items-center gap-1.5 shrink-0">
+                <span className="text-slate-200">{res?.name ?? tgt.itemId}</span>
                 <span className="font-mono tabular-nums text-amber-400">
-                  {(t.ratePerSec * displayUnitMult).toFixed(1)}
-                  {project.rateUnit === 'per_second' ? '/s' : project.rateUnit === 'per_minute' ? '/m' : '/h'}
+                  {(tgt.ratePerSec * displayUnitMult).toFixed(1)}
+                  {project.rateUnit === 'per_second'
+                    ? t.editor.unitShortSecond
+                    : project.rateUnit === 'per_minute'
+                      ? t.editor.unitShortMinute
+                      : t.editor.unitShortHour}
                 </span>
                 {project.config.targets.length > 1 && (
                   <button
@@ -367,14 +374,14 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
               className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 whitespace-nowrap"
             >
               <Plus className="w-3 h-3" />
-              Adicionar meta
+              {t.editor.addTarget}
             </button>
 
             {pickerMode === 'add' && (
               <div className="fixed left-4 top-28 z-40">
                 <FactorioCraftingPicker
                   index={index}
-                  title="Adicionar Meta Secundária"
+                  title={t.editor.pickerSecondaryTitle}
                   onOpenAssetsImport={() => {
                     setPickerMode(null);
                     onOpenAssetsImport?.();
@@ -402,13 +409,21 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
             pickerMode === null &&
             dismissedEmptyId !== project.id && (
               <div className="absolute inset-0 z-20 flex items-center justify-center p-6 pointer-events-none">
-                <div className="pointer-events-auto max-w-md w-full bg-[#12161D]/95 border border-[#2B3545] rounded-md p-6 shadow-2xl space-y-4 text-center">
+                <div className="pointer-events-auto max-w-md w-full bg-[#1B1D21]/95 border border-[#383C45] rounded-md p-6 shadow-2xl factorio-bevel space-y-4 text-center">
+                  <div className="w-14 h-14 mx-auto rounded-md border border-[#484C56] bg-[#141517] overflow-hidden shadow-lg">
+                    <img
+                      src={factorioLogo}
+                      alt="Factorio Production Planner"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
                   <div className="space-y-1.5">
-                    <h2 className="text-base font-semibold text-slate-100">
-                      Esquemática zerada
+                    <h2 className="font-display text-lg font-bold text-slate-100">
+                      {t.editor.emptyTitle}
                     </h2>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Escolha o item ou fluido que você deseja produzir para gerar automaticamente a cadeia de máquinas, esteiras e insertores — ou desenhe direto na grade.
+                      {t.editor.emptyDescription}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
@@ -416,17 +431,17 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                       type="button"
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={() => setPickerMode('primary')}
-                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 transition-colors"
+                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-500 rounded hover:bg-amber-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] transition-colors"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      Escolher Produto para Montar
+                      {t.editor.emptyChooseButton}
                     </button>
                     <button
                       type="button"
                       onClick={() => setDismissedEmptyId(project.id)}
-                      className="px-3 py-2 text-xs font-medium text-slate-300 bg-[#181E27] border border-[#2C3748] rounded hover:text-white transition-colors"
+                      className="px-3 py-2 text-xs font-medium text-slate-300 bg-[#25272D] border border-[#3A3E48] rounded hover:text-white factorio-bevel transition-colors"
                     >
-                      Desenhar manualmente
+                      {t.editor.emptyDrawManualButton}
                     </button>
                   </div>
                 </div>

@@ -26,6 +26,7 @@ import ELK from 'elkjs/lib/elk.bundled.js';
 import { LayoutGrid, Maximize2 } from 'lucide-react';
 import type { PackIndex } from '../../data/schema.ts';
 import type { RateUnit, SolveResult, SolvedStage } from '../../engine/types.ts';
+import { useI18n } from '../../i18n/I18nContext.tsx';
 import { formatRate } from '../../state/projectsStore.ts';
 import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
@@ -63,6 +64,7 @@ interface MaterialEdgeData extends Record<string, unknown> {
 }
 
 const StageNode: React.FC<NodeProps<Node<StageNodeData>>> = ({ data }) => {
+  const { t } = useI18n();
   const { stage, index, rateUnit, theoreticalMode, isSelected, isDimmed, hasAlert } = data;
   const countDisplay = theoreticalMode
     ? stage.theoreticalMachines.toFixed(2)
@@ -99,7 +101,7 @@ const StageNode: React.FC<NodeProps<Node<StageNodeData>>> = ({ data }) => {
             {countDisplay}x
           </div>
           <div className="text-[10px] text-slate-400 font-mono tabular-nums">
-            {utilPct}% uso
+            {utilPct}{t.flowGraph.usedPct}
           </div>
         </div>
       </div>
@@ -142,9 +144,9 @@ const StageNode: React.FC<NodeProps<Node<StageNodeData>>> = ({ data }) => {
 
         {(stage.moduleIds.length > 0 || (stage.beacon && stage.beacon.count > 0)) && (
           <div className="border-t border-[#222B38] pt-1 text-[10px] text-slate-400 truncate">
-            {stage.moduleIds.length > 0 && `${stage.moduleIds.length} módulos`}
+            {stage.moduleIds.length > 0 && `${stage.moduleIds.length} ${t.flowGraph.modules}`}
             {stage.moduleIds.length > 0 && stage.beacon && stage.beacon.count > 0 && ' · '}
-            {stage.beacon && stage.beacon.count > 0 && `${stage.beacon.count} beacons`}
+            {stage.beacon && stage.beacon.count > 0 && `${stage.beacon.count} ${t.flowGraph.beacons}`}
           </div>
         )}
       </div>
@@ -153,6 +155,7 @@ const StageNode: React.FC<NodeProps<Node<StageNodeData>>> = ({ data }) => {
 };
 
 const TerminalNode: React.FC<NodeProps<Node<TerminalNodeData>>> = ({ data }) => {
+  const { t } = useI18n();
   const { kind, itemId, ratePerSec, index, rateUnit, isDimmed } = data;
   const res = index.resourcesById.get(itemId);
   const isRaw = kind === 'raw';
@@ -175,7 +178,7 @@ const TerminalNode: React.FC<NodeProps<Node<TerminalNodeData>>> = ({ data }) => 
         <ResourceIcon resource={res} id={itemId} size={24} />
         <div className="min-w-0">
           <div className="text-[10px] uppercase tracking-wider text-slate-400">
-            {isRaw ? 'Recurso Bruto' : 'Meta Final'}
+            {isRaw ? t.flowGraph.rawResource : t.flowGraph.finalTarget}
           </div>
           <div className="text-xs font-semibold text-slate-100 truncate">
             {res?.name ?? itemId}
@@ -199,6 +202,7 @@ const MaterialFlowEdge: React.FC<EdgeProps<Edge<MaterialEdgeData>>> = ({
   targetPosition,
   data,
 }) => {
+  const { t } = useI18n();
   const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
@@ -241,7 +245,7 @@ const MaterialFlowEdge: React.FC<EdgeProps<Edge<MaterialEdgeData>>> = ({
           <span className="text-slate-200">{data.itemName}</span>{' '}
           <span style={{ color: strokeColor }}>{formatRate(data.ratePerSec, data.rateUnit)}</span>
           {!isFluid && data.beltsRequired > 0 && (
-            <span className="text-slate-400"> · {data.beltsRequired.toFixed(2)} est.</span>
+            <span className="text-slate-400"> · {data.beltsRequired.toFixed(2)} {t.flowGraph.beltsShort}</span>
           )}
         </div>
       </EdgeLabelRenderer>
@@ -275,6 +279,7 @@ export const FlowGraphView: React.FC<FlowGraphViewProps> = ({
   selectedStageId,
   onSelectStage,
 }) => {
+  const { t } = useI18n();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [layoutCounter, setLayoutCounter] = useState(0);
@@ -459,7 +464,7 @@ export const FlowGraphView: React.FC<FlowGraphViewProps> = ({
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#141920] border border-[#262F3D] rounded hover:bg-[#1C222C] transition-colors whitespace-nowrap"
         >
           <LayoutGrid className="w-3.5 h-3.5 text-amber-400" />
-          Auto-organizar (ELK)
+          {t.flowGraph.autoArrange}
         </button>
         {selectedStageId && (
           <button
@@ -468,7 +473,7 @@ export const FlowGraphView: React.FC<FlowGraphViewProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 bg-[#141920] border border-[#262F3D] rounded hover:text-white transition-colors whitespace-nowrap"
           >
             <Maximize2 className="w-3.5 h-3.5" />
-            Limpar Foco
+            {t.flowGraph.clearFocus}
           </button>
         )}
       </div>

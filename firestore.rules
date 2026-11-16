@@ -156,7 +156,7 @@ service cloud.firestore {
         allow get: if isValidId(userId)
           && isValidSchematicId(schematicId)
           && isOwner(userId)
-          && existing().ownerId == request.auth.uid;
+          && (resource == null || existing().ownerId == request.auth.uid);
         allow list: if isValidId(userId)
           && isOwner(userId)
           && resource.data.ownerId == request.auth.uid;
@@ -199,6 +199,7 @@ service cloud.firestore {
           && isValidSchematicId(schematicId)
           && isVerifiedUser()
           && isOwner(userId)
+          && resource != null
           && existing().ownerId == request.auth.uid;
       }
     }

@@ -8,14 +8,15 @@
 
   body {
     margin: 0;
-    background-color: #0c0f14;
-    color: #e6edf3;
+    background-color: #141517;
+    color: #e6e7e9;
     font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
 
   h1, h2, h3, .font-display {
-    font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
+    font-family: 'Barlow', 'DM Sans', sans-serif;
+    letter-spacing: -0.01em;
   }
 
   .font-mono,
@@ -25,30 +26,35 @@
   }
 }
 
+/* Factorio-inspired subtle metallic bevels */
+.factorio-bevel {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 /* React Flow industrial dark overrides */
 .react-flow__controls {
-  background: #141920;
-  border: 1px solid #262f3d;
+  background: #1b1d21;
+  border: 1px solid #32363d;
   border-radius: 6px;
   overflow: hidden;
   box-shadow: none;
 }
 
 .react-flow__controls-button {
-  background: #141920;
-  border-bottom: 1px solid #262f3d;
-  color: #94a3b8;
+  background: #1b1d21;
+  border-bottom: 1px solid #32363d;
+  color: #a1a6b0;
   fill: currentColor;
 }
 
 .react-flow__controls-button:hover {
-  background: #1d2430;
-  color: #f8fafc;
+  background: #26292f;
+  color: #f4f4f5;
 }
 
 .react-flow__minimap {
-  background: #11151c;
-  border: 1px solid #262f3d;
+  background: #16171b;
+  border: 1px solid #32363d;
   border-radius: 6px;
 }
 
@@ -62,12 +68,12 @@
   height: 7px;
 }
 ::-webkit-scrollbar-track {
-  background: #0c0f14;
+  background: #141517;
 }
 ::-webkit-scrollbar-thumb {
-  background: #28313e;
+  background: #30343b;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3b4759;
+  background: #434852;
 }
