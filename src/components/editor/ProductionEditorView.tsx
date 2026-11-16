@@ -1,0 +1,490 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useMemo, useState } from 'react';
+import { Columns, Cpu, FlaskConical, GitBranch, Grid, Plus, Trash2 } from 'lucide-react';
+import { packRegistry } from '../../data/packRegistry.ts';
+import { solveProductionPlan } from '../../engine/solver.ts';
+import type { PlanConfig, RateUnit } from '../../engine/types.ts';
+import { synthesizeFactoryLayout } from '../../spatial/layoutSynthesizer.ts';
+import type { GridEntity } from '../../spatial/types.ts';
+import {
+  RATE_UNIT_MULTIPLIER,
+  type FactoryProject,
+} from '../../state/projectsStore.ts';
+import { ResourceIcon } from '../common/ResourceIcon.tsx';
+import { FlowGraphView } from '../graph/FlowGraphView.tsx';
+import { StageInspectorPanel } from '../inspector/StageInspectorPanel.tsx';
+import { BlueprintGridCanvas } from '../spatial/BlueprintGridCanvas.tsx';
+import { FactorioCraftingPicker } from './FactorioCraftingPicker.tsx';
+import { TechTreeModal } from './TechTreeModal.tsx';
+
+type EditorViewMode = 'spatial' | 'flow' | 'split';
+
+interface ProductionEditorViewProps {
+  project: FactoryProject;
+  onUpdateProject: (updater: (prev: FactoryProject) => FactoryProject) => void;
+  onOpenAssetsImport?: () => void;
+}
+
+export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
+  project,
+  onUpdateProject,
+  onOpenAssetsImport,
+}) => {
+  const [viewMode, setViewMode] = useState<EditorViewMode>('spatial');
+  const [theoreticalMode, setTheoreticalMode] = useState(false);
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  const [pickerMode, setPickerMode] = useState<null | 'primary' | 'add'>(null);
+  const [techModalOpen, setTechModalOpen] = useState(false);
+
+  const availablePacks = packRegistry.listPacks();
+  const packId = availablePacks.some((p) => p.id === project.config.packId)
+    ? project.config.packId
+    : availablePacks[0].id;
+
+  const index = useMemo(() => packRegistry.getIndex(packId), [packId]);
+
+  const solveResult = useMemo(
+    () => solveProductionPlan(index, { ...project.config, packId }),
+    [index, project.config, packId]
+  );
+
+  const autoLayout = useMemo(
+    () =>
+      synthesizeFactoryLayout(
+        index,
+        solveResult,
+        { ...project.config, packId },
+        {
+          compactionMode: project.compactionMode,
+          ...project.layoutOptions,
+        }
+      ),
+    [index, solveResult, project.config, packId, project.compactionMode, project.layoutOptions]
+  );
+
+  const activeEntities = project.customEntities ?? autoLayout.entities;
+
+  const updateConfig = (updater: (prev: PlanConfig) => PlanConfig) => {
+    onUpdateProject((prev) => ({
+      ...prev,
+      config: updater(prev.config),
+      customEntities: undefined, // re-synthesize layout when math config changes
+      updatedAt: new Date().toISOString(),
+    }));
+  };
+
+  const primaryTarget = project.config.targets[0];
+  const primaryRes = primaryTarget ? index.resourcesById.get(primaryTarget.itemId) : undefined;
+  const displayUnitMult = RATE_UNIT_MULTIPLIER[project.rateUnit];
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-57px)] overflow-hidden">
+      {/* Editor Configuration Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-[#12161D] border-b border-[#252C37]">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Project Name */}
+          <input
+            type="text"
+            value={project.name}
+            onChange={(e) =>
+              onUpdateProject((prev) => ({
+                ...prev,
+                name: e.target.value,
+                updatedAt: new Date().toISOString(),
+              }))
+            }
+            className="w-52 px-2.5 py-1.5 text-xs font-semibold bg-[#0C0F14] border border-[#262F3D] rounded text-slate-100 focus:outline-none focus:border-amber-500"
+          />
+
+          {/* Primary Target Picker */}
+          <div className="relative">
+            <button
+              type="button"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setPickerMode((m) => (m === 'primary' ? null : 'primary'))}
+              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-[#181E27] border border-[#2C3748] rounded hover:border-amber-500/70 text-slate-100 whitespace-nowrap"
+            >
+              {primaryTarget && (
+                <ResourceIcon resource={primaryRes} id={primaryTarget.itemId} size={18} />
+              )}
+              <span>{primaryRes?.name ?? primaryTarget?.itemId ?? 'Selecionar Produto'}</span>
+            </button>
+
+            {pickerMode === 'primary' && (
+              <div className="absolute left-0 top-full mt-1.5 z-40">
+                <FactorioCraftingPicker
+                  index={index}
+                  selectedItemId={primaryTarget?.itemId}
+                  title="O que produzir (Produto Principal)"
+                  onOpenAssetsImport={() => {
+                    setPickerMode(null);
+                    onOpenAssetsImport?.();
+                  }}
+                  onClose={() => setPickerMode(null)}
+                  onSelect={(itemId) => {
+                    updateConfig((prev) => ({
+                      ...prev,
+                      targets: [
+                        {
+                          itemId,
+                          ratePerSec: prev.targets[0]?.ratePerSec ?? 1,
+                        },
+                        ...prev.targets.slice(1),
+                      ],
+                    }));
+                    setSelectedStageId(null);
+                    setPickerMode(null);
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Target Rate & Unit */}
+          {primaryTarget && (
+            <div className="flex items-center">
+              <input
+                type="number"
+                min={0.01}
+                step={project.rateUnit === 'per_second' ? 0.5 : 5}
+                value={Number((primaryTarget.ratePerSec * displayUnitMult).toFixed(3))}
+                onChange={(e) => {
+                  const val = Math.max(0.001, Number(e.target.value) || 0.001);
+                  updateConfig((prev) => ({
+                    ...prev,
+                    targets: [
+                      { ...prev.targets[0], ratePerSec: val / displayUnitMult },
+                      ...prev.targets.slice(1),
+                    ],
+                  }));
+                }}
+                className="w-20 px-2.5 py-1.5 text-xs font-mono tabular-nums text-right bg-[#0C0F14] border border-[#262F3D] rounded-l text-amber-400 font-semibold focus:outline-none focus:border-amber-500"
+              />
+              <select
+                value={project.rateUnit}
+                onChange={(e) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    rateUnit: e.target.value as RateUnit,
+                  }))
+                }
+                className="px-2 py-1.5 text-xs bg-[#181E27] border border-l-0 border-[#262F3D] rounded-r text-slate-200 focus:outline-none"
+              >
+                <option value="per_second">/segundo</option>
+                <option value="per_minute">/minuto</option>
+                <option value="per_hour">/hora</option>
+              </select>
+            </div>
+          )}
+
+          {/* Belt Tier */}
+          <select
+            value={project.config.defaultBeltId ?? 'express-transport-belt'}
+            onChange={(e) =>
+              updateConfig((prev) => ({ ...prev, defaultBeltId: e.target.value }))
+            }
+            className="px-2.5 py-1.5 text-xs bg-[#181E27] border border-[#262F3D] rounded text-slate-200 focus:outline-none"
+          >
+            {index.pack.belts.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name} ({b.throughputPerSec}/s)
+              </option>
+            ))}
+          </select>
+
+          {/* Pack Selector (supports Vanilla, Space Age, Krastorio 2 & imported mods) */}
+          {availablePacks.length > 1 && (
+            <select
+              value={packId}
+              onChange={(e) => {
+                const nextPackId = e.target.value;
+                const nextIndex = packRegistry.getIndex(nextPackId);
+                updateConfig((prev) => {
+                  const validTargets = prev.targets.filter((t) =>
+                    (nextIndex.recipesByProduct.get(t.itemId)?.length ?? 0) > 0
+                  );
+                  let nextTargets = validTargets;
+                  if (nextTargets.length === 0) {
+                    const preferredDefaults = [
+                      'kr-singularity-tech-card',
+                      'electromagnetic-science-pack',
+                      'electronic-circuit',
+                    ];
+                    const fallbackId =
+                      preferredDefaults.find(
+                        (id) => (nextIndex.recipesByProduct.get(id)?.length ?? 0) > 0
+                      ) ??
+                      Array.from(nextIndex.recipesByProduct.keys())[0] ??
+                      prev.targets[0]?.itemId ??
+                      'electronic-circuit';
+                    nextTargets = [{ itemId: fallbackId, ratePerSec: prev.targets[0]?.ratePerSec ?? 1 }];
+                  }
+                  const beltValid = prev.defaultBeltId && nextIndex.beltsById.has(prev.defaultBeltId);
+                  const insValid =
+                    prev.defaultInserterId && nextIndex.insertersById.has(prev.defaultInserterId);
+                  return {
+                    ...prev,
+                    packId: nextPackId,
+                    targets: nextTargets,
+                    defaultBeltId: beltValid
+                      ? prev.defaultBeltId
+                      : nextIndex.pack.belts[nextIndex.pack.belts.length - 1]?.id,
+                    defaultInserterId: insValid
+                      ? prev.defaultInserterId
+                      : nextIndex.pack.inserters[0]?.id,
+                  };
+                });
+                setSelectedStageId(null);
+              }}
+              className="px-2.5 py-1.5 text-xs bg-[#181E27] border border-[#262F3D] rounded text-slate-200 max-w-[230px]"
+            >
+              {availablePacks.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Tech Tree & Research Productivity Modal Trigger */}
+          <button
+            type="button"
+            onClick={() => setTechModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-[#181E27] border border-[#28313E] rounded text-slate-200 hover:border-amber-500/70 hover:text-white whitespace-nowrap shrink-0"
+          >
+            <FlaskConical className="w-3.5 h-3.5 text-amber-400" />
+            <span>Tecnologias</span>
+            {Object.keys(project.config.researchProductivityBonuses ?? {}).length > 0 && (
+              <span className="font-mono tabular-nums text-emerald-400">
+                +{Object.keys(project.config.researchProductivityBonuses ?? {}).length}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Right Controls: Theoretical vs Real + Dual View Switcher */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center p-0.5 bg-[#0C0F14] border border-[#252C37] rounded">
+            <button
+              type="button"
+              onClick={() => setTheoreticalMode(false)}
+              className={`px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                !theoreticalMode
+                  ? 'bg-[#1D2430] text-slate-100 font-medium'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Fábrica Real
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheoreticalMode(true)}
+              className={`px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                theoreticalMode
+                  ? 'bg-[#1D2430] text-slate-100 font-medium'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Teórico
+            </button>
+          </div>
+
+          <div className="flex items-center p-0.5 bg-[#0C0F14] border border-[#252C37] rounded">
+            <button
+              type="button"
+              onClick={() => setViewMode('spatial')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                viewMode === 'spatial'
+                  ? 'bg-amber-500 text-slate-950 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Grid className="w-3.5 h-3.5" />
+              Planta 2D
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('flow')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                viewMode === 'flow'
+                  ? 'bg-amber-500 text-slate-950 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <GitBranch className="w-3.5 h-3.5" />
+              Fluxograma
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('split')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                viewMode === 'split'
+                  ? 'bg-amber-500 text-slate-950 font-semibold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Columns className="w-3.5 h-3.5" />
+              Dividido
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Secondary Multi-Target Bar (compact) */}
+      <div className="flex items-center gap-3 px-4 py-1.5 bg-[#10141A] border-b border-[#1E2530] text-[11px] text-slate-400 overflow-x-auto">
+        <span className="inline-flex items-center gap-1 text-slate-300 shrink-0">
+          <Cpu className="w-3.5 h-3.5 text-amber-400" />
+          Metas ativas:
+        </span>
+        {project.config.targets.map((t, idx) => {
+          const res = index.resourcesById.get(t.itemId);
+          return (
+            <div key={`${t.itemId}-${idx}`} className="inline-flex items-center gap-1.5 shrink-0">
+              <span className="text-slate-200">{res?.name ?? t.itemId}</span>
+              <span className="font-mono tabular-nums text-amber-400">
+                {(t.ratePerSec * displayUnitMult).toFixed(1)}
+                {project.rateUnit === 'per_second' ? '/s' : project.rateUnit === 'per_minute' ? '/m' : '/h'}
+              </span>
+              {project.config.targets.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateConfig((prev) => ({
+                      ...prev,
+                      targets: prev.targets.filter((_, i) => i !== idx),
+                    }))
+                  }
+                  className="text-slate-500 hover:text-red-400"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              )}
+              {idx < project.config.targets.length - 1 && <span aria-hidden="true">·</span>}
+            </div>
+          );
+        })}
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setPickerMode((m) => (m === 'add' ? null : 'add'))}
+            className="inline-flex items-center gap-1 text-amber-400 hover:text-amber-300 whitespace-nowrap"
+          >
+            <Plus className="w-3 h-3" />
+            Adicionar meta
+          </button>
+
+          {pickerMode === 'add' && (
+            <div className="fixed left-4 top-28 z-40">
+              <FactorioCraftingPicker
+                index={index}
+                title="Adicionar Meta Secundária"
+                onOpenAssetsImport={() => {
+                  setPickerMode(null);
+                  onOpenAssetsImport?.();
+                }}
+                onClose={() => setPickerMode(null)}
+                onSelect={(itemId) => {
+                  updateConfig((prev) => ({
+                    ...prev,
+                    targets: [...prev.targets, { itemId, ratePerSec: 1 }],
+                  }));
+                  setPickerMode(null);
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Workspace Body: Canvas + Inspector */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        <div className="flex-1 flex overflow-hidden">
+          {(viewMode === 'spatial' || viewMode === 'split') && (
+            <div className={`${viewMode === 'split' ? 'w-1/2 border-r border-[#252C37]' : 'w-full'} h-full`}>
+              <BlueprintGridCanvas
+                index={index}
+                layout={autoLayout}
+                entities={activeEntities}
+                projectName={project.name}
+                defaultBeltId={project.config.defaultBeltId ?? 'express-transport-belt'}
+                compactionMode={project.compactionMode}
+                layoutOptions={project.layoutOptions}
+                selectedStageId={selectedStageId}
+                onSelectStage={setSelectedStageId}
+                onChangeEntities={(next: GridEntity[]) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    customEntities: next,
+                    updatedAt: new Date().toISOString(),
+                  }))
+                }
+                onResetAutoLayout={() =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    customEntities: undefined,
+                  }))
+                }
+                onToggleCompaction={(mode) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    compactionMode: mode,
+                    customEntities: undefined,
+                  }))
+                }
+                onChangeLayoutOptions={(patch) =>
+                  onUpdateProject((prev) => ({
+                    ...prev,
+                    layoutOptions: {
+                      ...prev.layoutOptions,
+                      ...patch,
+                    },
+                    customEntities: undefined,
+                    updatedAt: new Date().toISOString(),
+                  }))
+                }
+              />
+            </div>
+          )}
+
+          {(viewMode === 'flow' || viewMode === 'split') && (
+            <div className={`${viewMode === 'split' ? 'w-1/2' : 'w-full'} h-full`}>
+              <FlowGraphView
+                index={index}
+                solveResult={solveResult}
+                rateUnit={project.rateUnit}
+                theoreticalMode={theoreticalMode}
+                selectedStageId={selectedStageId}
+                onSelectStage={setSelectedStageId}
+              />
+            </div>
+          )}
+        </div>
+
+        <StageInspectorPanel
+          index={index}
+          config={project.config}
+          solveResult={solveResult}
+          rateUnit={project.rateUnit}
+          theoreticalMode={theoreticalMode}
+          selectedStageId={selectedStageId}
+          onSelectStage={setSelectedStageId}
+          onUpdateConfig={updateConfig}
+        />
+      </div>
+
+      {techModalOpen && (
+        <TechTreeModal
+          index={index}
+          config={project.config}
+          onUpdateConfig={updateConfig}
+          onClose={() => setTechModalOpen(false)}
+        />
+      )}
+    </div>
+  );
+};

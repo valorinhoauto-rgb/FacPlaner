@@ -1,0 +1,73 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: #0c0f14;
+    color: #e6edf3;
+    font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
+  }
+
+  .font-mono,
+  .tabular-nums {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* React Flow industrial dark overrides */
+.react-flow__controls {
+  background: #141920;
+  border: 1px solid #262f3d;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  background: #141920;
+  border-bottom: 1px solid #262f3d;
+  color: #94a3b8;
+  fill: currentColor;
+}
+
+.react-flow__controls-button:hover {
+  background: #1d2430;
+  color: #f8fafc;
+}
+
+.react-flow__minimap {
+  background: #11151c;
+  border: 1px solid #262f3d;
+  border-radius: 6px;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #0c0f14;
+}
+::-webkit-scrollbar-thumb {
+  background: #28313e;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b4759;
+}

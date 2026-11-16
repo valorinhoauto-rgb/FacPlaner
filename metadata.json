@@ -1,0 +1,6 @@
+{
+  "name": "Factorio Production Planner",
+  "description": "Planejador visual de fábricas de Factorio com motor de cálculo recursivo/matricial, síntese de linha de montagem em grade 2D (esteiras, insertores e máquinas) e suporte a mods.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
