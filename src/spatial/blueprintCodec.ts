@@ -66,10 +66,10 @@ export function buildBlueprintJson(
     const entity: FactorioBlueprintEntity = {
       entity_number: idx + 1,
       name: e.name,
-      // Factorio blueprint positions are centered on the entity footprint
+      // Factorio blueprint positions are centered on the entity footprint (preserving sub-tile offsets)
       position: {
-        x: e.tileX + e.width / 2,
-        y: e.tileY + e.height / 2,
+        x: e.tileX + (e.bpOffsetX ?? 0) + e.width / 2,
+        y: e.tileY + (e.bpOffsetY ?? 0) + e.height / 2,
       },
     };
 
@@ -314,8 +314,12 @@ export function parseBlueprintToEntities(
   const converted: GridEntity[] = rawEntities.map((re, idx) => {
     const { direction: dir, rawDirection } = normalizeDirection(re.direction, isFactorio2);
     const { kind, width, height } = inferEntityKindAndSize(re.name, dir, index);
-    const tileX = Math.round(re.position.x - width / 2);
-    const tileY = Math.round(re.position.y - height / 2);
+    const exactTileX = re.position.x - width / 2;
+    const exactTileY = re.position.y - height / 2;
+    const tileX = Math.round(exactTileX);
+    const tileY = Math.round(exactTileY);
+    const deltaX = exactTileX - tileX;
+    const deltaY = exactTileY - tileY;
 
     const moduleIds: string[] = [];
     if (Array.isArray(re.items)) {
@@ -343,6 +347,8 @@ export function parseBlueprintToEntities(
       name: re.name,
       tileX,
       tileY,
+      bpOffsetX: Math.abs(deltaX) > 1e-4 ? Math.round(deltaX * 1000) / 1000 : undefined,
+      bpOffsetY: Math.abs(deltaY) > 1e-4 ? Math.round(deltaY * 1000) / 1000 : undefined,
       width,
       height,
       direction: dir,

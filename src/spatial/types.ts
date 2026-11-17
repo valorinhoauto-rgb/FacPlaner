@@ -25,6 +25,9 @@ export interface GridEntity {
   /** Top-left tile coordinate on the discrete integer grid */
   tileX: number;
   tileY: number;
+  /** Sub-tile blueprint offset (e.g. ±0.5) preserved for odd-sized supports & diagonal/curved rails */
+  bpOffsetX?: number;
+  bpOffsetY?: number;
   /** Footprint in tiles */
   width: number;
   height: number;
@@ -126,6 +129,8 @@ export interface LayoutSynthesisOptions {
   productionOffsetY?: number;
   /** Optional external grid blueprint entities (rails, roboports, substations, walls, etc.) to fit production inside */
   gridFrame?: GridEntity[];
+  /** Optional Train Station / Cargo Wagon config to route unloading belts directly up to the wagon fronts */
+  trainStation?: TrainStationConfig;
 }
 
 export interface TrainStationConfig {
@@ -135,6 +140,7 @@ export interface TrainStationConfig {
   wagonCount: number;
   slotsPerWagon: number;
   stackSizeOverrides?: Record<string, number>;
+  lockedStopEntityNumber?: number;
 }
 
 export interface SynthesizedLayout {

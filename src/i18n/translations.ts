@@ -282,6 +282,9 @@ export interface Translations {
     lanesLabel: string;
     movesLabel: string;
     reachUnit: string;
+    processIsolated: string;
+    showFullFactory: string;
+    processFlowSummary: string;
     pauseAnim: string;
     playAnim: string;
     zoomOut: string;
@@ -363,6 +366,12 @@ export interface Translations {
       fluidWagonsHint: string;
       emptyRawInputs: string;
       close: string;
+      fixedStopsTitle: string;
+      railLockedHint: string;
+      addStopOnRail: string;
+      activeStopBadge: string;
+      snapToRailHint: string;
+      noRailsDetected: string;
     };
   };
   database: {
@@ -876,6 +885,9 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       lanesLabel: 'Faixas:',
       movesLabel: 'Move:',
       reachUnit: 'alcance',
+      processIsolated: 'Processo isolado',
+      showFullFactory: 'Mostrar tudo',
+      processFlowSummary: 'Fluxo do processo:',
       pauseAnim: 'Pausar animação',
       playAnim: 'Animar fluxo',
       zoomOut: 'Diminuir zoom',
@@ -965,6 +977,14 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         emptyRawInputs:
           'Nenhum insumo sólido ou fluido externo detectado nesta receita ainda. Escolha um produto ou marque etapas como entrada externa na Cadeia.',
         close: 'Fechar',
+        fixedStopsTitle: 'Paradas Existentes na Blueprint (Travadas no Trilho)',
+        railLockedHint:
+          'Selecione uma parada existente no trilho abaixo ou clique no mapa para travar uma parada na linha ferroviária.',
+        addStopOnRail: 'Adicionar Parada no Trilho',
+        activeStopBadge: 'Ativa',
+        snapToRailHint: 'Aproxime o cursor de um trilho para travar a parada',
+        noRailsDetected:
+          'Sem trilhos importados: ao escolher uma borda, um trilho com parada travada será gerado automaticamente.',
       },
     },
     database: {
@@ -1641,6 +1661,9 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       lanesLabel: 'Lanes:',
       movesLabel: 'Moves:',
       reachUnit: 'reach',
+      processIsolated: 'Process isolated',
+      showFullFactory: 'Show all',
+      processFlowSummary: 'Process flow:',
       pauseAnim: 'Pause animation',
       playAnim: 'Animate flow',
       zoomOut: 'Zoom out',
@@ -1729,6 +1752,14 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         emptyRawInputs:
           'No external solid or fluid inputs detected yet. Choose a target product or mark upstream stages as external inputs in Chain & Inputs.',
         close: 'Close',
+        fixedStopsTitle: 'Blueprint Train Stops (Locked to Rail)',
+        railLockedHint:
+          'Select an existing train stop on the track below or click on the rail to lock a new stop onto the flow line.',
+        addStopOnRail: 'Add Stop on Rail',
+        activeStopBadge: 'Active',
+        snapToRailHint: 'Move cursor near a rail track to lock the stop',
+        noRailsDetected:
+          'No rails imported: choosing an edge will generate a straight track with a locked stop.',
       },
     },
     database: {

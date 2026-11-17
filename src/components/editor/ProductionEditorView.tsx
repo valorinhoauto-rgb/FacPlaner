@@ -11,6 +11,10 @@ import { solveProductionPlan } from '../../engine/solver.ts';
 import type { PlanConfig, RateUnit } from '../../engine/types.ts';
 import { useI18n } from '../../i18n/I18nContext.tsx';
 import { synthesizeFactoryLayout } from '../../spatial/layoutSynthesizer.ts';
+import {
+  buildRailFlowNetwork,
+  detectTrainStopsOnNetwork,
+} from '../../spatial/railFlowNetwork.ts';
 import type { GridEntity, InputAlignmentSide } from '../../spatial/types.ts';
 import {
   RATE_UNIT_MULTIPLIER,
@@ -68,6 +72,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
           compactionMode: project.compactionMode,
           ...project.layoutOptions,
           gridFrame: project.gridFrame,
+          trainStation: project.trainStation,
         }
       ),
     [
@@ -78,6 +83,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
       project.compactionMode,
       project.layoutOptions,
       project.gridFrame,
+      project.trainStation,
     ]
   );
 
@@ -583,22 +589,76 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                   }))
                 }
                 onImportGridFrame={(frameEntities: GridEntity[]) =>
-                  onUpdateProject((prev) => ({
-                    ...prev,
-                    gridFrame: frameEntities.map((fe) => ({ ...fe, isGridFrame: true })),
-                    layoutOptions: {
-                      ...prev.layoutOptions,
-                      productionOffsetX: 0,
-                      productionOffsetY: 0,
-                    },
-                    customEntities: undefined,
-                    updatedAt: new Date().toISOString(),
-                  }))
+                  onUpdateProject((prev) => {
+                    const marked = frameEntities.map((fe) => ({ ...fe, isGridFrame: true }));
+                    const net = buildRailFlowNetwork(marked);
+                    const stops = detectTrainStopsOnNetwork(marked, net);
+                    const frameCx =
+                      marked.reduce((s, e) => s + e.tileX + e.width / 2, 0) /
+                      Math.max(1, marked.length);
+                    const frameCy =
+                      marked.reduce((s, e) => s + e.tileY + e.height / 2, 0) /
+                      Math.max(1, marked.length);
+                    const connectedStops = stops.filter((s) => s.chainIndex !== -1);
+                    const pool = connectedStops.length > 0 ? connectedStops : stops;
+                    const primaryStop = pool
+                      .slice()
+                      .sort(
+                        (a, b) =>
+                          Math.hypot(a.stopCenter.x - frameCx, a.stopCenter.y - frameCy) -
+                          Math.hypot(b.stopCenter.x - frameCx, b.stopCenter.y - frameCy)
+                      )[0];
+                    const nextTrainStation = primaryStop
+                      ? {
+                          tileX: primaryStop.tileX,
+                          tileY: primaryStop.tileY,
+                          direction: primaryStop.direction,
+                          wagonCount: prev.trainStation?.wagonCount ?? 2,
+                          slotsPerWagon: prev.trainStation?.slotsPerWagon ?? 40,
+                          stackSizeOverrides: prev.trainStation?.stackSizeOverrides ?? {},
+                          lockedStopEntityNumber: primaryStop.entityNumber,
+                        }
+                      : undefined;
+                    return {
+                      ...prev,
+                      gridFrame: marked,
+                      trainStation: nextTrainStation,
+                      layoutOptions: {
+                        ...prev.layoutOptions,
+                        productionOffsetX: 0,
+                        productionOffsetY: 0,
+                      },
+                      customEntities: undefined,
+                      updatedAt: new Date().toISOString(),
+                    };
+                  })
+                }
+                onAddTrainStopToFrame={(stopEntity: GridEntity, stationConfig) =>
+                  onUpdateProject((prev) => {
+                    const baseFrame = prev.gridFrame ?? [];
+                    const maxNum = baseFrame.reduce((m, e) => Math.max(m, e.entityNumber), 0);
+                    const inserted: GridEntity = {
+                      ...stopEntity,
+                      entityNumber: maxNum + 1,
+                      isGridFrame: true,
+                    };
+                    return {
+                      ...prev,
+                      gridFrame: [...baseFrame, inserted],
+                      trainStation: {
+                        ...stationConfig,
+                        lockedStopEntityNumber: inserted.entityNumber,
+                      },
+                      customEntities: undefined,
+                      updatedAt: new Date().toISOString(),
+                    };
+                  })
                 }
                 onClearGridFrame={() =>
                   onUpdateProject((prev) => ({
                     ...prev,
                     gridFrame: undefined,
+                    trainStation: undefined,
                     layoutOptions: {
                       ...prev.layoutOptions,
                       productionOffsetX: 0,
@@ -636,6 +696,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                   onUpdateProject((prev) => ({
                     ...prev,
                     trainStation: nextStation,
+                    customEntities: undefined,
                     updatedAt: new Date().toISOString(),
                   }))
                 }

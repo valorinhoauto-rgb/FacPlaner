@@ -387,4 +387,684 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     const plasticCustom = customStackPlan.itemAllocations.find((a) => a.itemId === 'plastic-bar')!;
     expect(plasticCustom.allocatedSlots).toBeGreaterThan(20);
   });
+
+  it('preserves 0.5 sub-tile coordinates on rail-supports and aligns Factorio 2.0 R=13 quarter-circle endpoints to 0.000', async () => {
+    const { getRailCurveSpec, evalRailPointAndNormal } = await import('../railGeometry.ts');
+
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Factorio 2.0 R=13 Quarter Circle',
+        version: 562949956632576,
+        entities: [
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 11 },
+          { entity_number: 4, name: 'curved-rail-b', position: { x: 12, y: 8 }, direction: 9 },
+          { entity_number: 5, name: 'curved-rail-a', position: { x: 14, y: 3 }, direction: 2 },
+          { entity_number: 6, name: 'straight-rail', position: { x: 14, y: 0 }, direction: 0 },
+          { entity_number: 7, name: 'rail-support', position: { x: 0.5, y: 14.5 }, direction: 0 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const reEncoded = encodeBlueprintString(parsed.entities, 'Factorio 2.0 R=13 Quarter Circle');
+    const reDecoded = decodeBlueprintString(reEncoded);
+
+    // Every entity must preserve exact relative distances (0.001 tile precision)
+    const orig0 = bpJson.blueprint.entities[0].position;
+    const dec0 = reDecoded.blueprint.entities[0].position;
+    for (let i = 0; i < bpJson.blueprint.entities.length; i++) {
+      const origDx = bpJson.blueprint.entities[i].position.x - orig0.x;
+      const origDy = bpJson.blueprint.entities[i].position.y - orig0.y;
+      const decDx = reDecoded.blueprint.entities[i].position.x - dec0.x;
+      const decDy = reDecoded.blueprint.entities[i].position.y - dec0.y;
+      expect(Math.abs(decDx - origDx)).toBeLessThan(0.01);
+      expect(Math.abs(decDy - origDy)).toBeLessThan(0.01);
+    }
+
+    // Verify 0.000 endpoint continuity across the entire R=13 quarter turn:
+    // straight -> curved-a -> curved-b -> curved-b -> curved-a -> straight
+    const worldEnds = parsed.entities.slice(0, 6).map((e) => {
+      const cx = e.tileX + (e.bpOffsetX ?? 0) + e.width / 2;
+      const cy = e.tileY + (e.bpOffsetY ?? 0) + e.height / 2;
+      const spec = getRailCurveSpec(e.name, e.rawDirection ?? e.direction);
+      const pStart = evalRailPointAndNormal(spec, 0);
+      const pEnd = evalRailPointAndNormal(spec, 1);
+      return {
+        start: { x: cx + pStart.x, y: cy + pStart.y },
+        end: { x: cx + pEnd.x, y: cy + pEnd.y },
+      };
+    });
+
+    const dist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+      Math.hypot(a.x - b.x, a.y - b.y);
+
+    let cursor = worldEnds[0].end;
+    for (let i = 1; i < worldEnds.length; i++) {
+      const seg = worldEnds[i];
+      const dStart = dist(cursor, seg.start);
+      const dEnd = dist(cursor, seg.end);
+      expect(Math.min(dStart, dEnd)).toBeLessThan(0.01);
+      cursor = dStart <= dEnd ? seg.end : seg.start;
+    }
+  });
+
+  it('heals S-bend half-diagonal rails into one continuous chain and keeps cargo wagons dead-straight after stop', async () => {
+    const { buildRailFlowNetwork, computeTrainCarPosesOnNetwork } = await import('../railFlowNetwork.ts');
+
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'S-Bend Siding + Straight Train',
+        version: 562949956632576,
+        entities: [
+          { entity_number: 1, name: 'rail-ramp', position: { x: -9, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'elevated-straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          // Deliberately pass mirrored direction=5 to verify G1 topology auto-healing
+          { entity_number: 4, name: 'half-diagonal-rail', position: { x: 8, y: 12 }, direction: 5 },
+          { entity_number: 5, name: 'curved-rail-a', position: { x: 13, y: 10 }, direction: 12 },
+          { entity_number: 6, name: 'straight-rail', position: { x: 16, y: 10 }, direction: 4 },
+          { entity_number: 7, name: 'straight-rail', position: { x: 18, y: 10 }, direction: 4 },
+          { entity_number: 8, name: 'straight-rail', position: { x: 20, y: 10 }, direction: 4 },
+          { entity_number: 9, name: 'straight-rail', position: { x: 22, y: 10 }, direction: 4 },
+          { entity_number: 10, name: 'straight-rail', position: { x: 24, y: 10 }, direction: 4 },
+          { entity_number: 11, name: 'train-stop', position: { x: 16, y: 8 }, direction: 12 },
+          { entity_number: 12, name: 'rail-signal', position: { x: 14.5, y: 8.5 }, direction: 4 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Entire S-bend + ramp + siding merges into ONE continuous unbroken chain!
+    expect(net.chains.length).toBe(1);
+    expect(net.chains[0].totalLength).toBeGreaterThan(38);
+
+    // Westbound train-stop & signal on North side orient the entire chain Westbound
+    const stopEnt = parsed.entities.find((e) => e.name === 'train-stop')!;
+    const poses = computeTrainCarPosesOnNetwork(
+      net,
+      {
+        tileX: stopEnt.tileX,
+        tileY: stopEnt.tileY,
+        direction: stopEnt.direction,
+        wagonCount: 4,
+        slotsPerWagon: 40,
+        lockedStopEntityNumber: stopEnt.entityNumber,
+      },
+      { x: 20, y: 0 }
+    );
+    expect(poses.length).toBe(5);
+    // All 4 wagons sit dead-straight horizontally on the siding (zero tilt!)
+    for (let ci = 0; ci < poses.length; ci++) {
+      expect(Math.abs(poses[ci].forwardY)).toBeLessThan(0.001);
+      expect(poses[ci].forwardX).toBeLessThan(-0.99);
+    }
+  });
+
+  it('infers opposing one-way flow directions from signals (even facing incoming) & stops and aligns locomotive front flush with train-stop', async () => {
+    const { buildRailFlowNetwork, sampleChainAtArcLength, computeTrainCarPosesOnNetwork } = await import(
+      '../railFlowNetwork.ts'
+    );
+
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Dual Track Flow + Stop',
+        version: 562949956632576,
+        entities: [
+          // Left vertical track (x = 0): Southbound (dir = 8), signal on West (right-hand side, x = -1.5), facing incoming (dir=0)
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 0 }, direction: 0 },
+          { entity_number: 2, name: 'straight-rail', position: { x: 0, y: 2 }, direction: 0 },
+          { entity_number: 3, name: 'straight-rail', position: { x: 0, y: 4 }, direction: 0 },
+          { entity_number: 4, name: 'straight-rail', position: { x: 0, y: 6 }, direction: 0 },
+          { entity_number: 5, name: 'straight-rail', position: { x: 0, y: 8 }, direction: 0 },
+          { entity_number: 6, name: 'rail-signal', position: { x: -1.5, y: 6.5 }, direction: 0 },
+          // Right vertical track (x = 4, 4-tile parallel spacing!): Northbound (dir = 0), signal & stop on East
+          { entity_number: 7, name: 'straight-rail', position: { x: 4, y: 0 }, direction: 0 },
+          { entity_number: 8, name: 'straight-rail', position: { x: 4, y: 2 }, direction: 0 },
+          { entity_number: 9, name: 'straight-rail', position: { x: 4, y: 4 }, direction: 0 },
+          { entity_number: 10, name: 'straight-rail', position: { x: 4, y: 6 }, direction: 0 },
+          { entity_number: 11, name: 'straight-rail', position: { x: 4, y: 8 }, direction: 0 },
+          { entity_number: 12, name: 'rail-signal', position: { x: 5.5, y: 2.5 }, direction: 8 },
+          { entity_number: 13, name: 'train-stop', position: { x: 6, y: 2 }, direction: 0 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+    expect(net.chains.length).toBe(2);
+
+    const getChainFlowY = (ci: number) => {
+      const f = net.chainFlows[ci];
+      expect(f).not.toBe(0);
+      const s = sampleChainAtArcLength(net.chains[ci], net.chains[ci].totalLength / 2);
+      return s.ty * f;
+    };
+
+    const leftIdx = net.chains[0].points[0].x < net.chains[1].points[0].x ? 0 : 1;
+    const rightIdx = 1 - leftIdx;
+    expect(getChainFlowY(leftIdx)).toBeGreaterThan(0.9); // Southbound (+Y)
+    expect(getChainFlowY(rightIdx)).toBeLessThan(-0.9); // Northbound (-Y)
+
+    // Verify locomotive (index 0) front bumper sits flush with train-stop front edge, and 2 cargo wagons trail behind
+    const stopEnt = parsed.entities.find((e) => e.name === 'train-stop')!;
+    const poses = computeTrainCarPosesOnNetwork(
+      net,
+      {
+        tileX: stopEnt.tileX,
+        tileY: stopEnt.tileY,
+        direction: stopEnt.direction,
+        wagonCount: 2,
+        slotsPerWagon: 40,
+        lockedStopEntityNumber: stopEnt.entityNumber,
+      },
+      { x: 2, y: 4 }
+    );
+    expect(poses.length).toBe(3);
+
+    const stopFrontY = stopEnt.tileY; // dir=0 faces North (-Y), so stop front edge is tileY (centerY - 1.0)
+    const locoFrontY = poses[0].centerY + poses[0].forwardY * 3.0; // half of 6-tile car
+    expect(Math.abs(locoFrontY - stopFrontY)).toBeLessThan(0.05);
+
+    // Cargo wagons #1 and #2 trail strictly behind at 7.0-tile spacing (never stacked on the locomotive)
+    expect(Math.abs(poses[1].centerY - poses[0].centerY - 7.0)).toBeLessThan(0.05);
+    expect(Math.abs(poses[2].centerY - poses[1].centerY - 7.0)).toBeLessThan(0.05);
+  });
+
+  it('welds a full 360-degree Factorio 2.0 R=13 roundabout + S-bend exit branch and propagates consistent one-way flow', async () => {
+    const { buildRailFlowNetwork, sampleChainAtArcLength } = await import('../railFlowNetwork.ts');
+
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'R13 Roundabout + S-Bend',
+        version: 562949956632576,
+        entities: [
+          // Full 360° Factorio 2.0 roundabout centered at (0, 0) with exact (±8, ±12)/(±12, ±8) curved-rail-b centers
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 11 },
+          { entity_number: 4, name: 'curved-rail-b', position: { x: 12, y: 8 }, direction: 9 },
+          { entity_number: 5, name: 'curved-rail-a', position: { x: 14, y: 3 }, direction: 2 },
+          { entity_number: 6, name: 'straight-rail', position: { x: 14, y: 0 }, direction: 0 },
+          { entity_number: 7, name: 'curved-rail-a', position: { x: 14, y: -3 }, direction: 0 },
+          { entity_number: 8, name: 'curved-rail-b', position: { x: 12, y: -8 }, direction: 7 },
+          { entity_number: 9, name: 'curved-rail-b', position: { x: 8, y: -12 }, direction: 5 },
+          { entity_number: 10, name: 'curved-rail-a', position: { x: 3, y: -14 }, direction: 14 },
+          { entity_number: 11, name: 'straight-rail', position: { x: 0, y: -14 }, direction: 4 },
+          { entity_number: 12, name: 'curved-rail-a', position: { x: -3, y: -14 }, direction: 12 },
+          { entity_number: 13, name: 'curved-rail-b', position: { x: -8, y: -12 }, direction: 3 },
+          { entity_number: 14, name: 'curved-rail-b', position: { x: -12, y: -8 }, direction: 1 },
+          { entity_number: 15, name: 'curved-rail-a', position: { x: -14, y: -3 }, direction: 10 },
+          { entity_number: 16, name: 'straight-rail', position: { x: -14, y: 0 }, direction: 0 },
+          { entity_number: 17, name: 'curved-rail-a', position: { x: -14, y: 3 }, direction: 8 },
+          { entity_number: 18, name: 'curved-rail-b', position: { x: -12, y: 8 }, direction: 15 },
+          { entity_number: 19, name: 'curved-rail-b', position: { x: -8, y: 12 }, direction: 13 },
+          { entity_number: 20, name: 'curved-rail-a', position: { x: -3, y: 14 }, direction: 6 },
+          // Right-hand counter-clockwise signal at bottom (y=15.5 -> Eastbound)
+          { entity_number: 21, name: 'rail-signal', position: { x: 0, y: 15.5 }, direction: 12 },
+          // Branch splitting smoothly Eastbound off bottom of roundabout at (1, 14) -> S-bend
+          { entity_number: 22, name: 'straight-rail', position: { x: 2, y: 14 }, direction: 4 },
+          { entity_number: 23, name: 'straight-rail', position: { x: 4, y: 14 }, direction: 4 },
+          { entity_number: 24, name: 'curved-rail-a', position: { x: 7, y: 14 }, direction: 4 },
+          { entity_number: 25, name: 'half-diagonal-rail', position: { x: 12, y: 12 }, direction: 3 },
+          { entity_number: 26, name: 'curved-rail-a', position: { x: 17, y: 10 }, direction: 12 },
+          { entity_number: 27, name: 'straight-rail', position: { x: 20, y: 10 }, direction: 4 },
+          { entity_number: 28, name: 'straight-rail', position: { x: 22, y: 10 }, direction: 4 },
+          // Signal on South side of exit siding (y=11.5 -> Eastbound)
+          { entity_number: 29, name: 'rail-signal', position: { x: 20.5, y: 11.5 }, direction: 12 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // 1 junction vertex at (1, 14) splits roundabout ring + S-bend branch -> exactly 2 clean chains!
+    expect(net.chains.length).toBe(2);
+
+    // Both the roundabout ring and the exit S-bend must flow consistently Eastbound/CCW without flipping!
+    for (let ci = 0; ci < net.chains.length; ci++) {
+      expect(net.chainFlows[ci]).not.toBe(0);
+    }
+    const ringIdx = net.chains.findIndex((c) => c.closed);
+    const branchIdx = net.chains.findIndex((c) => !c.closed);
+    expect(ringIdx).toBeGreaterThanOrEqual(0);
+    expect(branchIdx).toBeGreaterThanOrEqual(0);
+
+    // At top of CCW roundabout, flow must travel Westbound (-X); on exit S-bend, Eastbound (+X)
+    const ringTop = sampleChainAtArcLength(net.chains[ringIdx], net.chains[ringIdx].totalLength / 2);
+    expect(ringTop.tx * net.chainFlows[ringIdx]).toBeLessThan(-0.5);
+
+    // Ring must stay strictly circular (R ≈ 14.04..14.33) around its center with zero 45-degree inward pinch
+    const ringPts = net.chains[ringIdx].points;
+    const ringCx = (Math.min(...ringPts.map((p) => p.x)) + Math.max(...ringPts.map((p) => p.x))) / 2;
+    const ringCy = (Math.min(...ringPts.map((p) => p.y)) + Math.max(...ringPts.map((p) => p.y))) / 2;
+    const ringRadii = ringPts.map((p) => Math.hypot(p.x - ringCx, p.y - ringCy));
+    expect(Math.min(...ringRadii)).toBeGreaterThan(13.9);
+    expect(Math.max(...ringRadii)).toBeLessThan(14.5);
+
+    const branchMid = sampleChainAtArcLength(net.chains[branchIdx], net.chains[branchIdx].totalLength / 2);
+    expect(branchMid.tx * net.chainFlows[branchIdx]).toBeGreaterThan(0.5);
+  });
+
+  it('locks fixed train-stops onto rails via right-hand rule and rejects off-rail cursor snapping', async () => {
+    const { buildRailFlowNetwork, detectTrainStopsOnNetwork, snapStationToRail } = await import(
+      '../railFlowNetwork.ts'
+    );
+
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+    const net = buildRailFlowNetwork(parsedFrame.entities);
+    expect(net.chains.length).toBeGreaterThan(0);
+
+    // Off-rail cursor (>10 tiles from any rail) must return null so stops cannot float off-track
+    const offRail = snapStationToRail(net, 24, -24, 10);
+    expect(offRail).toBeNull();
+
+    // Cursor inside city block near bottom horizontal rail (y = -1) snaps onto North side (Westbound dir=12)
+    const snapped = snapStationToRail(net, 30, -3.2, 10);
+    expect(snapped).not.toBeNull();
+    expect(snapped!.direction).toBe(12);
+    expect(snapped!.tileY).toBe(-4);
+
+    // Adding that stop to the grid detects it back as a fixed RailStopAnchor attached to a valid chain
+    const withStop = [
+      ...parsedFrame.entities,
+      {
+        entityNumber: 999,
+        kind: 'grid-obstacle' as const,
+        name: 'train-stop',
+        tileX: snapped!.tileX,
+        tileY: snapped!.tileY,
+        width: 2,
+        height: 2,
+        direction: snapped!.direction,
+        isGridFrame: true,
+      },
+    ];
+    const detected = detectTrainStopsOnNetwork(withStop, net);
+    expect(detected.length).toBe(1);
+    expect(detected[0].chainIndex).not.toBe(-1);
+    expect(detected[0].direction).toBe(12);
+  });
+
+  it('routes raw input belts and unloading inserters directly to optimized cargo wagon fronts without collisions', async () => {
+    const { buildRailFlowNetwork, snapStationToRail, computeTrainCarPosesOnNetwork } = await import(
+      '../railFlowNetwork.ts'
+    );
+
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 7.5 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+    const net = buildRailFlowNetwork(parsedFrame.entities);
+    const snapped = snapStationToRail(net, 40, -3.2, 10)!;
+    expect(snapped).not.toBeNull();
+
+    const frameWithStop = [
+      ...parsedFrame.entities,
+      {
+        entityNumber: 999,
+        kind: 'grid-obstacle' as const,
+        name: 'train-stop',
+        tileX: snapped.tileX,
+        tileY: snapped.tileY,
+        width: 2,
+        height: 2,
+        direction: snapped.direction,
+        isGridFrame: true,
+      },
+    ];
+
+    const stationConfig = {
+      tileX: snapped.tileX,
+      tileY: snapped.tileY,
+      direction: snapped.direction,
+      wagonCount: 2,
+      slotsPerWagon: 40,
+      lockedStopEntityNumber: 999,
+    };
+
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: frameWithStop,
+      trainStation: stationConfig,
+    });
+
+    const inputPorts = layout.ports.filter((p) => p.directionType === 'input');
+    expect(inputPorts.length).toBe(2);
+
+    // Every input port sits right at a cargo wagon front along the rail, with an unloading inserter adjacent to it
+    const carPoses = computeTrainCarPosesOnNetwork(net, stationConfig, { x: 24, y: -24 });
+    const wagonPoses = carPoses.slice(1);
+    const unloadingInserters = layout.entities.filter(
+      (e) =>
+        e.kind === 'inserter' &&
+        inputPorts.some((p) => Math.abs(e.tileX - p.tileX) + Math.abs(e.tileY - p.tileY) === 1)
+    );
+    expect(unloadingInserters.length).toBe(2);
+
+    for (const port of inputPorts) {
+      const minWagonDist = Math.min(
+        ...wagonPoses.map((w) => Math.hypot(port.tileX + 0.5 - w.centerX, port.tileY + 0.5 - w.centerY))
+      );
+      expect(minWagonDist).toBeLessThanOrEqual(8.5);
+    }
+
+    // Zero tile collisions across frame, rails, unloading inserters, routed belts, and machines
+    const occupied = new Set<string>();
+    for (const e of layout.entities) {
+      for (let dx = 0; dx < e.width; dx++) {
+        for (let dy = 0; dy < e.height; dy++) {
+          const key = `${e.tileX + dx},${e.tileY + dy}`;
+          expect(occupied.has(key)).toBe(false);
+          occupied.add(key);
+        }
+      }
+    }
+  });
+
+  it('keeps co-located roundabout ring and Y-branch curved-rail-b pairs disjoint with zero missing gaps', async () => {
+    const { buildRailFlowNetwork } = await import('../railFlowNetwork.ts');
+
+    // Co-located curved-rail-b ring + Y-branch pairs at (±8, ±12) and (±12, ±8)
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: '4-Branch Roundabout Co-located Switches',
+        version: 562949956632576,
+        entities: [
+          // Full 360° Factorio 2.0 roundabout ring centered at (0, 0)
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 11 },
+          { entity_number: 4, name: 'curved-rail-b', position: { x: 12, y: 8 }, direction: 9 },
+          { entity_number: 5, name: 'curved-rail-a', position: { x: 14, y: 3 }, direction: 2 },
+          { entity_number: 6, name: 'straight-rail', position: { x: 14, y: 0 }, direction: 0 },
+          { entity_number: 7, name: 'curved-rail-a', position: { x: 14, y: -3 }, direction: 0 },
+          { entity_number: 8, name: 'curved-rail-b', position: { x: 12, y: -8 }, direction: 7 },
+          { entity_number: 9, name: 'curved-rail-b', position: { x: 8, y: -12 }, direction: 5 },
+          { entity_number: 10, name: 'curved-rail-a', position: { x: 3, y: -14 }, direction: 14 },
+          { entity_number: 11, name: 'straight-rail', position: { x: 0, y: -14 }, direction: 4 },
+          { entity_number: 12, name: 'curved-rail-a', position: { x: -3, y: -14 }, direction: 12 },
+          { entity_number: 13, name: 'curved-rail-b', position: { x: -8, y: -12 }, direction: 3 },
+          { entity_number: 14, name: 'curved-rail-b', position: { x: -12, y: -8 }, direction: 1 },
+          { entity_number: 15, name: 'curved-rail-a', position: { x: -14, y: -3 }, direction: 10 },
+          { entity_number: 16, name: 'straight-rail', position: { x: -14, y: 0 }, direction: 0 },
+          { entity_number: 17, name: 'curved-rail-a', position: { x: -14, y: 3 }, direction: 8 },
+          { entity_number: 18, name: 'curved-rail-b', position: { x: -12, y: 8 }, direction: 15 },
+          { entity_number: 19, name: 'curved-rail-b', position: { x: -8, y: 12 }, direction: 13 },
+          { entity_number: 20, name: 'curved-rail-a', position: { x: -3, y: 14 }, direction: 6 },
+          // Co-located Y-branch curved-rail-b pairs + curved-rail-a + straight-rail on South & East arms
+          { entity_number: 21, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 1 },
+          { entity_number: 22, name: 'curved-rail-a', position: { x: 6, y: 17 }, direction: 10 },
+          { entity_number: 23, name: 'straight-rail', position: { x: 6, y: 20 }, direction: 0 },
+          { entity_number: 24, name: 'curved-rail-b', position: { x: -8, y: 12 }, direction: 7 },
+          { entity_number: 25, name: 'curved-rail-a', position: { x: -6, y: 17 }, direction: 0 },
+          { entity_number: 26, name: 'straight-rail', position: { x: -6, y: 20 }, direction: 0 },
+          { entity_number: 27, name: 'curved-rail-b', position: { x: 12, y: -8 }, direction: 13 },
+          { entity_number: 28, name: 'curved-rail-a', position: { x: 17, y: -6 }, direction: 6 },
+          { entity_number: 29, name: 'straight-rail', position: { x: 20, y: -6 }, direction: 4 },
+          { entity_number: 30, name: 'curved-rail-b', position: { x: 12, y: 8 }, direction: 3 },
+          { entity_number: 31, name: 'curved-rail-a', position: { x: 17, y: 6 }, direction: 12 },
+          { entity_number: 32, name: 'straight-rail', position: { x: 20, y: 6 }, direction: 4 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // None of the 4 Y-branch chains may fragment into orphaned single-piece stubs (< 6 tiles long)
+    const minLen = Math.min(...net.chains.map((c) => c.totalLength));
+    expect(minLen).toBeGreaterThan(6);
+
+    // Every outer branch tip ((±6, 21) and (21, ±6)) and the closed loop must have valid connected chains
+    const openEnds = net.vertices.filter((v) => v.connections.length === 1);
+    // 4 outer tips -> exactly 4 dead-end tips (no internal broken Y-switch ends)
+    expect(openEnds.length).toBe(4);
+  });
+
+  it('consolidates shared raw train ports and routes multi-stage Chemical Science Pack without collisions or dangling stubs', async () => {
+    const { buildRailFlowNetwork, snapStationToRail } = await import('../railFlowNetwork.ts');
+
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'chemical-science-pack', ratePerSec: 0.1 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate', 'steel-plate', 'plastic-bar', 'sulfur'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+    const net = buildRailFlowNetwork(parsedFrame.entities);
+    const snapped = snapStationToRail(net, 40, -3.2, 10)!;
+    expect(snapped).not.toBeNull();
+
+    const frameWithStop = [
+      ...parsedFrame.entities,
+      {
+        entityNumber: 999,
+        kind: 'grid-obstacle' as const,
+        name: 'train-stop',
+        tileX: snapped.tileX,
+        tileY: snapped.tileY,
+        width: 2,
+        height: 2,
+        direction: snapped.direction,
+        isGridFrame: true,
+      },
+    ];
+
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: frameWithStop,
+      trainStation: {
+        tileX: snapped.tileX,
+        tileY: snapped.tileY,
+        direction: snapped.direction,
+        wagonCount: 4,
+        slotsPerWagon: 40,
+        lockedStopEntityNumber: 999,
+      },
+    });
+
+    // Consolidated raw inputs: 5 unique items -> 5 unique input ports (not duplicated per machine stage)
+    const inputPorts = layout.ports.filter((p) => p.directionType === 'input');
+    expect(inputPorts.length).toBe(5);
+    expect(new Set(inputPorts.map((p) => p.itemId)).size).toBe(5);
+    expect(new Set(inputPorts.map((p) => `${p.tileX},${p.tileY}`)).size).toBe(5);
+
+    // Must place splitters to branch shared raw items (iron-plate / copper-plate) across consumers
+    expect(layout.stats.splitterCount).toBeGreaterThanOrEqual(2);
+
+    // Every input port tile must have an unloading inserter adjacent and zero tile collisions across layout
+    const unloadingInserters = layout.entities.filter(
+      (e) =>
+        e.kind === 'inserter' &&
+        inputPorts.some((p) => Math.abs(e.tileX - p.tileX) + Math.abs(e.tileY - p.tileY) === 1)
+    );
+    expect(unloadingInserters.length).toBe(5);
+
+    const occupied = new Set<string>();
+    for (const e of layout.entities) {
+      for (let dx = 0; dx < e.width; dx++) {
+        for (let dy = 0; dy < e.height; dy++) {
+          const key = `${e.tileX + dx},${e.tileY + dy}`;
+          expect(occupied.has(key)).toBe(false);
+          occupied.add(key);
+        }
+      }
+    }
+  });
+
+  it('prevents co-located Y-branch curve from collapsing onto already-locked ring curve on Pass 1', async () => {
+    const { buildRailFlowNetwork } = await import('../railFlowNetwork.ts');
+
+    // Ring member 1..16 with valid directions; co-located Y-branch curved-rail-b at (-8,-12)
+    // and (12,-8) intentionally supplied with mismatched/ambiguous initial directions
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Co-located Y-switch test',
+        version: 562949958139904,
+        entities: [
+          // Complete 20-segment Factorio 2.0 roundabout ring centered at (0, 0)
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 11 },
+          { entity_number: 4, name: 'curved-rail-b', position: { x: 12, y: 8 }, direction: 9 },
+          { entity_number: 5, name: 'curved-rail-a', position: { x: 14, y: 3 }, direction: 2 },
+          { entity_number: 6, name: 'straight-rail', position: { x: 14, y: 0 }, direction: 0 },
+          { entity_number: 7, name: 'curved-rail-a', position: { x: 14, y: -3 }, direction: 0 },
+          { entity_number: 8, name: 'curved-rail-b', position: { x: 12, y: -8 }, direction: 7 },
+          { entity_number: 9, name: 'curved-rail-b', position: { x: 8, y: -12 }, direction: 5 },
+          { entity_number: 10, name: 'curved-rail-a', position: { x: 3, y: -14 }, direction: 14 },
+          { entity_number: 11, name: 'straight-rail', position: { x: 0, y: -14 }, direction: 4 },
+          { entity_number: 12, name: 'curved-rail-a', position: { x: -3, y: -14 }, direction: 12 },
+          { entity_number: 13, name: 'curved-rail-b', position: { x: -8, y: -12 }, direction: 3 },
+          { entity_number: 14, name: 'curved-rail-b', position: { x: -12, y: -8 }, direction: 1 },
+          { entity_number: 15, name: 'curved-rail-a', position: { x: -14, y: -3 }, direction: 10 },
+          { entity_number: 16, name: 'straight-rail', position: { x: -14, y: 0 }, direction: 0 },
+          { entity_number: 17, name: 'curved-rail-a', position: { x: -14, y: 3 }, direction: 8 },
+          { entity_number: 18, name: 'curved-rail-b', position: { x: -12, y: 8 }, direction: 15 },
+          { entity_number: 19, name: 'curved-rail-b', position: { x: -8, y: 12 }, direction: 13 },
+          { entity_number: 20, name: 'curved-rail-a', position: { x: -3, y: 14 }, direction: 6 },
+          // Co-located Y-branches: South-East (+8,+12) and North-West (-8,-12)
+          { entity_number: 21, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 1 },
+          { entity_number: 22, name: 'curved-rail-a', position: { x: 6, y: 17 }, direction: 10 },
+          { entity_number: 23, name: 'straight-rail', position: { x: 6, y: 20 }, direction: 0 },
+          // Intentionally rawDirection=0 at (-8, -12) forcing Pass 1 resolution while entity 13 locks at Pass 0
+          { entity_number: 24, name: 'curved-rail-b', position: { x: -8, y: -12 }, direction: 0 },
+          { entity_number: 25, name: 'curved-rail-a', position: { x: -6, y: -17 }, direction: 10 },
+          { entity_number: 26, name: 'straight-rail', position: { x: -6, y: -20 }, direction: 0 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Every single rail piece must remain in chains without collapsing/deleting the Y-branch piece
+    const openEnds = net.vertices.filter((v) => v.connections.length === 1);
+    expect(openEnds.length).toBe(2); // only (6, 21) and (-6, -21) outer tips
+  });
+
+  it('isolates only direct upstream/downstream process entities when clicking a machine', async () => {
+    const { traceMachineProcess } = await import('../processTracer.ts');
+    const { buildRailFlowNetwork, snapStationToRail } = await import('../railFlowNetwork.ts');
+
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'chemical-science-pack', ratePerSec: 0.1 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate', 'steel-plate', 'plastic-bar', 'sulfur'],
+      defaultBeltId: 'express-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+    const net = buildRailFlowNetwork(parsedFrame.entities);
+    const snapped = snapStationToRail(net, 40, -3.2, 10)!;
+
+    const frameWithStop = [
+      ...parsedFrame.entities,
+      {
+        entityNumber: 999,
+        kind: 'grid-obstacle' as const,
+        name: 'train-stop',
+        tileX: snapped.tileX,
+        tileY: snapped.tileY,
+        width: 2,
+        height: 2,
+        direction: snapped.direction,
+        isGridFrame: true,
+      },
+    ];
+
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: frameWithStop,
+      trainStation: {
+        tileX: snapped.tileX,
+        tileY: snapped.tileY,
+        direction: snapped.direction,
+        wagonCount: 4,
+        slotsPerWagon: 40,
+        lockedStopEntityNumber: 999,
+      },
+    });
+
+    const ecMachine = layout.entities.find(
+      (e) => e.kind === 'machine' && e.recipeId === 'electronic-circuit'
+    )!;
+    const copperCableMachine = layout.entities.find(
+      (e) => e.kind === 'machine' && e.recipeId === 'copper-cable'
+    )!;
+    const advCircuitMachine = layout.entities.find(
+      (e) => e.kind === 'machine' && e.recipeId === 'advanced-circuit'
+    )!;
+    const engineMachine = layout.entities.find(
+      (e) => e.kind === 'machine' && e.recipeId === 'engine-unit'
+    )!;
+    const sulfurPort = layout.ports.find(
+      (p) => p.directionType === 'input' && p.itemId === 'sulfur'
+    )!;
+    const ironPort = layout.ports.find(
+      (p) => p.directionType === 'input' && p.itemId === 'iron-plate'
+    )!;
+
+    const trace = traceMachineProcess(layout.entities, layout.ports, ecMachine);
+
+    // Must include target machine, direct producer (copper-cable), direct consumer (advanced-circuit),
+    // and raw iron-plate entry port
+    expect(trace.entityNumbers.has(ecMachine.entityNumber)).toBe(true);
+    expect(trace.entityNumbers.has(copperCableMachine.entityNumber)).toBe(true);
+    expect(trace.entityNumbers.has(advCircuitMachine.entityNumber)).toBe(true);
+    expect(trace.portKeys.has(`${ironPort.tileX},${ironPort.tileY}`)).toBe(true);
+
+    // Must NOT include unrelated stages/ports such as Engine Unit or Sulfur port
+    expect(trace.entityNumbers.has(engineMachine.entityNumber)).toBe(false);
+    expect(trace.portKeys.has(`${sulfurPort.tileX},${sulfurPort.tileY}`)).toBe(false);
+  });
 });
+
+
+

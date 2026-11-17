@@ -14,7 +14,13 @@ import type {
   SpatialLayoutStats,
   StageZone,
   SynthesizedLayout,
+  TrainStationConfig,
 } from './types.ts';
+import {
+  buildRailFlowNetwork,
+  computeTrainCarPosesOnNetwork,
+} from './railFlowNetwork.ts';
+import { computeTrainWagonPlan } from './trainPlanner.ts';
 
 const MAX_UNBOUNDED_MACHINES_PER_STAGE = 120;
 
@@ -415,17 +421,33 @@ interface BeltTrack {
   partnerItemId?: string;
 }
 
+interface StageAnchor {
+  x: number;
+  y: number;
+  entryX?: number;
+  entryY?: number;
+  entryDir?: Direction;
+  itemId: string;
+  kind: 'item' | 'fluid';
+}
+
 /**
- * Packs solid ingredients onto belts using Factorio lane-sharing when two
- * ingredients each fit within half a belt (throughput / 2).
+ * Packs solid ingredients onto belts. Uses dedicated belt tracks whenever all
+ * ingredients fit without sharing so stage inputs never compete for a single entry tile,
+ * and falls back to dual-lane sharing only when a recipe exceeds maxDedicatedTracks.
  */
 function packSolidInputBelts(
   stage: SolvedStage,
   beltThroughput: number,
-  excludeItemId?: string
+  excludeItemId?: string,
+  maxDedicatedTracks = 3
 ): BeltTrack[] {
   const solidInputs = stage.inputs.filter((i) => i.kind === 'item' && i.itemId !== excludeItemId);
   if (solidInputs.length === 0) return [];
+
+  if (solidInputs.length <= maxDedicatedTracks) {
+    return solidInputs.map((item) => ({ itemId: item.itemId, laneMode: 'full' }));
+  }
 
   const halfBelt = beltThroughput / 2;
   const tracks: BeltTrack[] = [];
@@ -439,7 +461,13 @@ function packSolidInputBelts(
   for (let i = 0; i < halfCandidates.length; i += 2) {
     const first = halfCandidates[i];
     const second = halfCandidates[i + 1];
-    if (second) {
+    if (second && tracks.length + Math.ceil((halfCandidates.length - i) / 2) <= maxDedicatedTracks) {
+      tracks.push({
+        itemId: first.itemId,
+        laneMode: 'left',
+        partnerItemId: second.itemId,
+      });
+    } else if (second && solidInputs.length > maxDedicatedTracks) {
       tracks.push({
         itemId: first.itemId,
         laneMode: 'left',
@@ -465,8 +493,9 @@ export function synthesizeFactoryLayout(
   config: PlanConfig,
   modeOrOptions: 'compact' | 'standard' | LayoutSynthesisOptions = 'compact'
 ): SynthesizedLayout {
-  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame'>> & {
+  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame' | 'trainStation'>> & {
     gridFrame?: GridEntity[];
+    trainStation?: TrainStationConfig;
   } =
     typeof modeOrOptions === 'string'
       ? {
@@ -478,6 +507,7 @@ export function synthesizeFactoryLayout(
           productionOffsetX: 0,
           productionOffsetY: 0,
           gridFrame: undefined,
+          trainStation: undefined,
         }
       : {
           compactionMode: modeOrOptions.compactionMode ?? 'compact',
@@ -488,6 +518,7 @@ export function synthesizeFactoryLayout(
           productionOffsetX: Math.round(modeOrOptions.productionOffsetX ?? 0),
           productionOffsetY: Math.round(modeOrOptions.productionOffsetY ?? 0),
           gridFrame: modeOrOptions.gridFrame,
+          trainStation: modeOrOptions.trainStation,
         };
 
   const compactionMode = options.compactionMode;
@@ -512,6 +543,14 @@ export function synthesizeFactoryLayout(
   const undergroundName = beltDef?.undergroundId ?? 'underground-belt';
   const splitterName = beltDef?.splitterId ?? 'splitter';
   const beltThroughput = beltDef?.throughputPerSec ?? 45;
+  const beltMaxJump =
+    beltName.includes('turbo')
+      ? 11
+      : beltName.includes('express') || beltName.includes('superior')
+        ? 9
+        : beltName.includes('fast')
+          ? 7
+          : 5;
 
   const fastInserter =
     index.insertersById.get(config.defaultInserterId ?? 'fast-inserter') ??
@@ -579,28 +618,22 @@ export function synthesizeFactoryLayout(
   const blockGapX =
     inputSide !== 'distributed'
       ? compactionMode === 'compact'
-        ? 4
-        : 6
-      : compactionMode === 'compact'
-        ? 3
-        : 5;
-  const layerGapY =
-    inputSide !== 'distributed'
-      ? compactionMode === 'compact'
-        ? 6
-        : 8
+        ? 5
+        : 7
       : compactionMode === 'compact'
         ? 4
         : 6;
+  const layerGapY =
+    inputSide !== 'distributed'
+      ? compactionMode === 'compact'
+        ? 7
+        : 9
+      : compactionMode === 'compact'
+        ? 5
+        : 7;
 
-  const stageOutputAnchors = new Map<
-    string,
-    Array<{ x: number; y: number; itemId: string; kind: 'item' | 'fluid' }>
-  >();
-  const stageInputAnchors = new Map<
-    string,
-    Array<{ x: number; y: number; itemId: string; kind: 'item' | 'fluid' }>
-  >();
+  const stageOutputAnchors = new Map<string, StageAnchor[]>();
+  const stageInputAnchors = new Map<string, StageAnchor[]>();
 
   // Safe interior synthesis window when adapting inside an imported Base Grid Frame
   const safeMinX = interiorBounds ? interiorBounds.minX + (inputSide === 'west' ? 5 : 1) : 0;
@@ -627,9 +660,39 @@ export function synthesizeFactoryLayout(
       stage.inputs.some((i) => i.kind === 'fluid') ||
       stage.outputs.some((o) => o.kind === 'fluid');
 
-    const inputTracks = packSolidInputBelts(stage, beltThroughput, directPair?.itemId);
+    const solidInputCount = stage.inputs.filter(
+      (i) => i.kind === 'item' && i.itemId !== directPair?.itemId
+    ).length;
+
+    const mW = machine.tileSize.width;
+    const mH = machine.tileSize.height;
+    const rowStepY = Math.max(
+      mH + (hasFluid ? 1 : 0),
+      feederMachine ? feederMachine.tileSize.height : mH
+    );
+
+    const maxPerColUnbounded = compactionMode === 'compact' ? 10 : 8;
+    const maxRowsByGridHeight = interiorBounds
+      ? Math.max(1, Math.floor(availInteriorH / rowStepY))
+      : maxPerColUnbounded;
+
+    // Reserve twin columns only when solid inputs <= 2 (so 3-input recipes keep 3 clean separate tracks)
+    const useTwinColumns =
+      !directPair &&
+      count >= 6 &&
+      !hasFluid &&
+      solidInputCount <= 2 &&
+      machine.tileSize.width <= 3 &&
+      (!interiorBounds || Math.ceil(count / 2) <= maxRowsByGridHeight);
+
+    const inputTracks = packSolidInputBelts(
+      stage,
+      beltThroughput,
+      directPair?.itemId,
+      useTwinColumns ? 2 : 3
+    );
     const feederTracks = directPair
-      ? packSolidInputBelts(directPair.feeder, beltThroughput)
+      ? packSolidInputBelts(directPair.feeder, beltThroughput, undefined, 2)
       : [];
     const fluidInputs = stage.inputs.filter((i) => i.kind === 'fluid');
     const fluidOutputs = stage.outputs.filter((o) => o.kind === 'fluid');
@@ -656,33 +719,13 @@ export function synthesizeFactoryLayout(
         ? feederMachine.tileSize.width + 1 + (feederTracks.length > 0 ? feederTracks.length + 2 : 0)
         : 0;
 
-    const mW = machine.tileSize.width;
-    const mH = machine.tileSize.height;
-    const rowStepY = Math.max(
-      mH + (hasFluid ? 1 : 0),
-      feederMachine ? feederMachine.tileSize.height : mH
-    );
-
-    // Fold column height automatically when constrained inside an imported grid height!
-    const maxPerColUnbounded = compactionMode === 'compact' ? 10 : 8;
-    const maxRowsByGridHeight = interiorBounds
-      ? Math.max(1, Math.floor(availInteriorH / rowStepY))
-      : maxPerColUnbounded;
-
-    const useTwinColumns =
-      !directPair &&
-      count >= 6 &&
-      !hasFluid &&
-      machine.tileSize.width <= 3 &&
-      (!interiorBounds || Math.ceil(count / 2) <= maxRowsByGridHeight);
-
     let cols = useTwinColumns
       ? 2
       : interiorBounds
         ? Math.max(1, Math.ceil(count / Math.min(maxPerColUnbounded, maxRowsByGridHeight)))
         : Math.min(4, Math.max(1, Math.ceil(count / maxPerColUnbounded)));
 
-    const colGap = useTwinColumns ? 3 : 4 + feederUnitW;
+    const colGap = useTwinColumns ? 3 : (inputTracks.length > 2 ? 6 : 4) + feederUnitW;
     const fixedW =
       beaconStripW +
       leftCorridorW +
@@ -829,9 +872,41 @@ export function synthesizeFactoryLayout(
       const blockBottomY = currentBaseY;
       const machinesStartX = currentX + beaconStripW + bp.leftCorridorW + bp.fluidW + bp.feederUnitW;
 
-      const outAnchors: Array<{ x: number; y: number; itemId: string; kind: 'item' | 'fluid' }> = [];
-      const inAnchors: Array<{ x: number; y: number; itemId: string; kind: 'item' | 'fluid' }> = [];
-      const feederInAnchors: Array<{ x: number; y: number; itemId: string; kind: 'item' | 'fluid' }> = [];
+      // Align input tracks with their upstream producer X coordinates to prevent
+      // cross-over tangles (e.g. Pipe on left + Iron Gear Wheel on right entering Engine Unit)
+      if (!directPair && !useTwinColumns && (inputTracks.length === 2 || inputTracks.length === 3)) {
+        const blockCenterX = machinesStartX + Math.floor(mW / 2);
+        const sourceXFor = (itemId: string): number => {
+          const edge = solveResult.edges.find(
+            (e) => e.targetStageId === stage.id && e.itemId === itemId && e.kind === 'item'
+          );
+          if (edge && !edge.sourceStageId.startsWith('RAW:') && !absorbedFeederIds.has(edge.sourceStageId)) {
+            const anchors = stageOutputAnchors.get(edge.sourceStageId);
+            const match = anchors?.find((a) => a.itemId === itemId && a.kind === 'item');
+            if (match) return match.x;
+          }
+          return blockCenterX;
+        };
+        const sortedBySrcX = [...inputTracks].sort(
+          (a, b) => sourceXFor(a.itemId) - sourceXFor(b.itemId)
+        );
+        if (inputTracks.length === 2) {
+          // track[1] is outer-left (mX-3), track[0] is inner-left (mX-2)
+          inputTracks[1] = sortedBySrcX[0];
+          inputTracks[0] = sortedBySrcX[1];
+        } else if (inputTracks.length === 3) {
+          // track[1] is outer-left (mX-3), track[0] is inner-left (mX-2), track[2] is right (mX+mW+2)
+          inputTracks[1] = sortedBySrcX[0];
+          inputTracks[0] = sortedBySrcX[1];
+          inputTracks[2] = sortedBySrcX[2];
+        }
+      }
+
+      const outAnchors: StageAnchor[] = [];
+      const inAnchors: StageAnchor[] = [];
+      const feederInAnchors: StageAnchor[] = [];
+      const colTrackXs = new Map<number, number[]>();
+      const colOutXs: number[] = [];
 
       const mainSolidOutput = stage.outputs.find((o) => o.kind === 'item');
       const machineColor = index.resourcesById.get(
@@ -1165,6 +1240,12 @@ export function synthesizeFactoryLayout(
         if (placedInCol === 0) continue;
 
         // Lay continuous vertical belts for this column (adapting around grid obstacles via undergrounds!)
+        const recordTrackCol = (tIdx: number, bx: number) => {
+          const arr = colTrackXs.get(tIdx) ?? [];
+          arr.push(bx);
+          colTrackXs.set(tIdx, arr);
+        };
+
         if (useTwinColumns) {
           const isLeftCol = c === 0;
           const beltX = isLeftCol ? mX - 2 : mX + mW + 1;
@@ -1182,15 +1263,7 @@ export function synthesizeFactoryLayout(
                 : { left: t0.itemId, right: t0.itemId },
               stage.id
             );
-            inAnchors.push({ x: beltX, y: blockBottomY - 1, itemId: t0.itemId, kind: 'item' });
-            if (t0.partnerItemId) {
-              inAnchors.push({
-                x: beltX,
-                y: blockBottomY - 1,
-                itemId: t0.partnerItemId,
-                kind: 'item',
-              });
-            }
+            recordTrackCol(0, beltX);
           }
           if (inputTracks[1]) {
             const outerBeltX = isLeftCol ? beltX - 1 : beltX + 1;
@@ -1207,7 +1280,7 @@ export function synthesizeFactoryLayout(
                 : { left: t1.itemId, right: t1.itemId },
               stage.id
             );
-            inAnchors.push({ x: outerBeltX, y: blockBottomY - 1, itemId: t1.itemId, kind: 'item' });
+            recordTrackCol(1, outerBeltX);
           }
 
           if (c === 0 && mainSolidOutput) {
@@ -1230,7 +1303,7 @@ export function synthesizeFactoryLayout(
             });
           }
         } else {
-          if (directPair && feederMachine && feederTracks[0]) {
+          if (directPair && feederMachine && feederTracks[0] && c === 0) {
             const ft0 = feederTracks[0];
             const fbX = mX - 1 - feederMachine.tileSize.width - 2;
             layAdaptiveVerticalBelt(
@@ -1266,15 +1339,7 @@ export function synthesizeFactoryLayout(
                 : { left: t0.itemId, right: t0.itemId },
               stage.id
             );
-            inAnchors.push({ x: bX, y: blockBottomY - 1, itemId: t0.itemId, kind: 'item' });
-            if (t0.partnerItemId) {
-              inAnchors.push({
-                x: bX,
-                y: blockBottomY - 1,
-                itemId: t0.partnerItemId,
-                kind: 'item',
-              });
-            }
+            recordTrackCol(0, bX);
           }
           if (inputTracks[1] && !directPair) {
             const t1 = inputTracks[1];
@@ -1291,15 +1356,7 @@ export function synthesizeFactoryLayout(
                 : { left: t1.itemId, right: t1.itemId },
               stage.id
             );
-            inAnchors.push({ x: bX, y: blockBottomY - 1, itemId: t1.itemId, kind: 'item' });
-            if (t1.partnerItemId) {
-              inAnchors.push({
-                x: bX,
-                y: blockBottomY - 1,
-                itemId: t1.partnerItemId,
-                kind: 'item',
-              });
-            }
+            recordTrackCol(1, bX);
           }
           if (mainSolidOutput) {
             const outX = mX + mW + 1;
@@ -1313,12 +1370,7 @@ export function synthesizeFactoryLayout(
               { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId },
               stage.id
             );
-            outAnchors.push({
-              x: outX,
-              y: blockTopY,
-              itemId: mainSolidOutput.itemId,
-              kind: 'item',
-            });
+            colOutXs.push(outX);
           }
           if (inputTracks[2] && !directPair) {
             const t2 = inputTracks[2];
@@ -1335,8 +1387,199 @@ export function synthesizeFactoryLayout(
                 : { left: t2.itemId, right: t2.itemId },
               stage.id
             );
-            inAnchors.push({ x: bX, y: blockBottomY - 1, itemId: t2.itemId, kind: 'item' });
+            recordTrackCol(2, bX);
           }
+        }
+      }
+
+      // Unify multi-column solid inputs (both twin-column and multi-column) into 1 clean stage anchor per track
+      const wireTrackUnifiedAnchor = (tIdx: number, track: BeltTrack, colXs: number[]) => {
+        if (colXs.length === 0) return;
+        const primaryX = colXs[0];
+        let entryYBase = blockBottomY - 1;
+
+        if (colXs.length > 1) {
+          // Wire column 0..N together via a bottom distribution manifold + splitter
+          const splitY = blockBottomY + 1 + tIdx * 3;
+          const busY = blockBottomY + tIdx * 3;
+          const midX = Math.floor((colXs[0] + colXs[colXs.length - 1]) / 2);
+          const lanes = track.partnerItemId
+            ? { left: track.itemId, right: track.partnerItemId }
+            : { left: track.itemId, right: track.itemId };
+          const maxBusY = interiorBounds ? interiorBounds.maxY - 2 : Infinity;
+
+          if (splitY <= maxBusY && grid.canPlace(midX, splitY, 2, 1)) {
+            grid.place({
+              kind: 'splitter',
+              name: splitterName,
+              tileX: midX,
+              tileY: splitY,
+              width: 2,
+              height: 1,
+              direction: 0,
+              stageId: stage.id,
+            });
+
+            // Connect left arm from midX -> colXs[0] and right arm from midX+1 -> colXs[last]
+            const connectArm = (startX: number, targetX: number) => {
+              const step = targetX >= startX ? 1 : -1;
+              const dir: Direction = step > 0 ? 4 : 12;
+              for (let x = startX; step > 0 ? x <= targetX : x >= targetX; x += step) {
+                if (x === targetX) {
+                  for (let y = busY; y >= blockBottomY; y--) {
+                    grid.placeOrMergeBelt(x, y, beltName, 0, lanes, stage.id);
+                  }
+                } else {
+                  const ex = grid.getAt(x, busY);
+                  if (!ex) {
+                    grid.placeOrMergeBelt(x, busY, beltName, dir, lanes, stage.id);
+                  } else if (!ex.isGridFrame) {
+                    // Jump cleanly underground across intermediate column belts
+                    const prev = grid.getAt(x - step, busY);
+                    if (prev && prev.kind === 'transport-belt' && prev.direction === dir) {
+                      grid.remove(prev);
+                      grid.place({
+                        kind: 'underground-belt',
+                        name: undergroundName,
+                        tileX: x - step,
+                        tileY: busY,
+                        width: 1,
+                        height: 1,
+                        direction: dir,
+                        undergroundType: 'input',
+                        beltLanes: lanes,
+                        stageId: stage.id,
+                      });
+                    }
+                    let landX = x + step;
+                    while (grid.getAt(landX, busY) && Math.abs(landX - (x - step)) < beltMaxJump) {
+                      landX += step;
+                    }
+                    if (!grid.getAt(landX, busY)) {
+                      grid.place({
+                        kind: 'underground-belt',
+                        name: undergroundName,
+                        tileX: landX,
+                        tileY: busY,
+                        width: 1,
+                        height: 1,
+                        direction: dir,
+                        undergroundType: 'output',
+                        beltLanes: lanes,
+                        stageId: stage.id,
+                      });
+                      x = landX;
+                    }
+                  }
+                }
+              }
+            };
+
+            connectArm(midX, colXs[0]);
+            connectArm(midX + 1, colXs[colXs.length - 1]);
+
+            inAnchors.push({
+              x: midX,
+              y: splitY,
+              entryX: midX,
+              entryY: splitY + 1,
+              entryDir: 0,
+              itemId: track.itemId,
+              kind: 'item',
+            });
+            return;
+          }
+        }
+
+        // Single column (or cramped fallback): clean vertical entry (with distinct side-load for partner item if present)
+        if (track.partnerItemId) {
+          const mergeY = blockBottomY;
+          const lanes = { left: track.itemId, right: track.partnerItemId };
+          if (!interiorBounds || mergeY + 1 < interiorBounds.maxY) {
+            grid.placeOrMergeBelt(primaryX, mergeY, beltName, 0, lanes, stage.id);
+            entryYBase = mergeY;
+            if (grid.canPlace(primaryX + 1, mergeY, 1, 1)) {
+              grid.place({
+                kind: 'transport-belt',
+                name: beltName,
+                tileX: primaryX + 1,
+                tileY: mergeY,
+                width: 1,
+                height: 1,
+                direction: 12,
+                beltLanes: { left: track.partnerItemId, right: track.partnerItemId },
+                stageId: stage.id,
+              });
+              inAnchors.push({
+                x: primaryX + 1,
+                y: mergeY,
+                entryX: primaryX + 1,
+                entryY: mergeY + 1,
+                entryDir: 0,
+                itemId: track.partnerItemId,
+                kind: 'item',
+              });
+            } else {
+              inAnchors.push({
+                x: primaryX,
+                y: entryYBase,
+                itemId: track.partnerItemId,
+                kind: 'item',
+              });
+            }
+          }
+        }
+
+        inAnchors.push({
+          x: primaryX,
+          y: entryYBase,
+          itemId: track.itemId,
+          kind: 'item',
+        });
+      };
+
+      inputTracks.forEach((track, tIdx) => {
+        wireTrackUnifiedAnchor(tIdx, track, colTrackXs.get(tIdx) ?? []);
+      });
+
+      // Unify multi-column solid outputs into 1 stage output anchor when !useTwinColumns && cols > 1
+      if (!useTwinColumns && mainSolidOutput && colOutXs.length > 0) {
+        if (colOutXs.length > 1) {
+          const topBusY = blockTopY - 1;
+          const targetX = colOutXs[0];
+          const lanes = { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId };
+          if (!interiorBounds || topBusY >= interiorBounds.minY) {
+            grid.placeOrMergeBelt(targetX, topBusY, beltName, 0, lanes, stage.id);
+            for (let ci = 1; ci < colOutXs.length; ci++) {
+              for (let x = colOutXs[ci]; x > targetX; x--) {
+                if (x === colOutXs[ci] && !grid.getAt(x, topBusY)) {
+                  grid.placeOrMergeBelt(x, topBusY, beltName, 12, lanes, stage.id);
+                } else if (!grid.getAt(x, topBusY)) {
+                  grid.placeOrMergeBelt(x, topBusY, beltName, 12, lanes, stage.id);
+                }
+              }
+            }
+            outAnchors.push({
+              x: targetX,
+              y: topBusY,
+              itemId: mainSolidOutput.itemId,
+              kind: 'item',
+            });
+          } else {
+            outAnchors.push({
+              x: targetX,
+              y: blockTopY,
+              itemId: mainSolidOutput.itemId,
+              kind: 'item',
+            });
+          }
+        } else {
+          outAnchors.push({
+            x: colOutXs[0],
+            y: blockTopY,
+            itemId: mainSolidOutput.itemId,
+            kind: 'item',
+          });
         }
       }
 
@@ -1386,25 +1629,7 @@ export function synthesizeFactoryLayout(
         }
       }
 
-      // Splitter at bottom of twin columns
-      if (useTwinColumns && inputTracks[0] && placedMachines > 0) {
-        const leftBeltX = machinesStartX - 2;
-        const rightBeltX = machinesStartX + mW + bp.colGap + mW + 1;
-        const splitY = blockBottomY + 1;
-        const midX = Math.floor((leftBeltX + rightBeltX) / 2);
-        if ((!interiorBounds || splitY < safeMaxY + 2) && grid.canPlace(midX, splitY, 2, 1)) {
-          grid.place({
-            kind: 'splitter',
-            name: splitterName,
-            tileX: midX,
-            tileY: splitY,
-            width: 2,
-            height: 1,
-            direction: 0,
-            stageId: stage.id,
-          });
-        }
-      }
+      // Single unified splitters handled inside wireTrackUnifiedAnchor above
 
       if (placedMachines > 0) {
         zones.push({
@@ -1433,36 +1658,224 @@ export function synthesizeFactoryLayout(
     currentBaseY -= shelf.maxH + layerGapY;
   }
 
-  // 4. Route Inter-Stage Belts & Underground Crossings between connected stages
-  for (const edge of solveResult.edges) {
-    if (edge.kind !== 'item') continue;
-    if (absorbedFeederIds.has(edge.sourceStageId)) continue; // handled via direct insertion!
-    const fromAnchors = stageOutputAnchors.get(edge.sourceStageId) ?? [];
-    const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-    const src = fromAnchors.find((a) => a.itemId === edge.itemId);
-    const dst = toAnchors.find((a) => a.itemId === edge.itemId);
-    if (!src || !dst) continue;
+  // Helper helpers for stage anchor entry/exit tiles
+  const getAnchorEntry = (anchor: StageAnchor): { x: number; y: number; dir: Direction } => ({
+    x: anchor.entryX ?? anchor.x,
+    y: anchor.entryY ?? anchor.y + 1,
+    dir: anchor.entryDir ?? 0,
+  });
 
-    const busY = Math.round((src.y + dst.y) / 2);
-    const stepY1 = src.y >= busY ? -1 : 1;
+  const getAnchorExit = (anchor: StageAnchor): { x: number; y: number; dir: Direction } => ({
+    x: anchor.entryX ?? anchor.x,
+    y: anchor.entryY ?? anchor.y - 1,
+    dir: anchor.entryDir ?? 0,
+  });
 
-    for (let y = src.y + stepY1; stepY1 < 0 ? y >= busY : y <= busY; y += stepY1) {
-      routeBeltStep(grid, src.x, y, beltName, undergroundName, stepY1 < 0 ? 0 : 8, edge.itemId);
+  // Pre-reserve all un-routed stage input & output aprons so earlier A* paths
+  // jump cleanly underneath them instead of blocking downstream stage entries.
+  const reservedAprons = new Set<string>();
+  for (const list of stageInputAnchors.values()) {
+    for (const a of list) {
+      const e = getAnchorEntry(a);
+      reservedAprons.add(`${e.x},${e.y}`);
     }
-
-    const stepX = dst.x >= src.x ? 1 : -1;
-    const dirX: Direction = stepX > 0 ? 4 : 12;
-    for (let x = src.x; stepX > 0 ? x <= dst.x : x >= dst.x; x += stepX) {
-      routeBeltStep(grid, x, busY, beltName, undergroundName, dirX, edge.itemId);
-    }
-
-    const stepY2 = dst.y <= busY ? -1 : 1;
-    for (let y = busY + stepY2; stepY2 < 0 ? y >= dst.y : y <= dst.y; y += stepY2) {
-      routeBeltStep(grid, dst.x, y, beltName, undergroundName, stepY2 < 0 ? 0 : 8, edge.itemId);
+  }
+  for (const list of stageOutputAnchors.values()) {
+    for (const a of list) {
+      const ex = getAnchorExit(a);
+      reservedAprons.add(`${ex.x},${ex.y}`);
     }
   }
 
-  // 5. Raw / External Input Feeders + Port Markers (Distributed OR Same-Side Train Grid)
+  // Track placed belt/pipe trunk tiles per item/origin for clean splitter branching
+  const rawTrunksByItem = new Map<string, Array<{ x: number; y: number }>>();
+  const recordRawTrunk = (kind: 'item' | 'fluid', itemId: string, pts: Array<{ x: number; y: number }>) => {
+    const k = `${kind}:${itemId}`;
+    const list = rawTrunksByItem.get(k) ?? [];
+    list.push(...pts);
+    rawTrunksByItem.set(k, list);
+  };
+
+  // 4. Route Inter-Stage Belts & Pipes using unified A* + real 2×1 splitter branching
+  const prodOnlyInter = grid.entities.filter((e) => !e.isGridFrame);
+  const interPreBounds = computeLayoutStats(
+    prodOnlyInter.length > 0 ? prodOnlyInter : grid.entities
+  ).bounds;
+  const interBounds = interiorBounds
+    ? {
+        minX: interiorBounds.minX,
+        maxX: interiorBounds.maxX - 1,
+        minY: interiorBounds.minY,
+        maxY: interiorBounds.maxY - 1,
+      }
+    : {
+        minX: interPreBounds.minX - 14,
+        maxX: interPreBounds.maxX + 14,
+        minY: interPreBounds.minY - 12,
+        maxY: interPreBounds.maxY + 12,
+      };
+
+  interface InterConsumerGroup {
+    sourceStageId: string;
+    itemId: string;
+    kind: 'item' | 'fluid';
+    srcAnchor: StageAnchor;
+    targets: Array<{ dstAnchor: StageAnchor }>;
+  }
+  const interGroups = new Map<string, InterConsumerGroup>();
+  for (const edge of solveResult.edges) {
+    if (edge.sourceStageId.startsWith('RAW:') || edge.targetStageId.startsWith('TARGET:')) continue;
+    if (absorbedFeederIds.has(edge.sourceStageId)) continue;
+    const fromAnchors = stageOutputAnchors.get(edge.sourceStageId) ?? [];
+    const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
+    const src = fromAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
+    const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
+    if (!src || !dst) continue;
+
+    const gKey = `${edge.sourceStageId}:${edge.kind}:${edge.itemId}`;
+    const existing = interGroups.get(gKey);
+    if (existing) {
+      if (
+        !existing.targets.some(
+          (t) => t.dstAnchor.x === dst.x && t.dstAnchor.y === dst.y && t.dstAnchor.entryX === dst.entryX
+        )
+      ) {
+        existing.targets.push({ dstAnchor: dst });
+      }
+    } else {
+      interGroups.set(gKey, {
+        sourceStageId: edge.sourceStageId,
+        itemId: edge.itemId,
+        kind: edge.kind,
+        srcAnchor: src,
+        targets: [{ dstAnchor: dst }],
+      });
+    }
+  }
+
+  const sortedInterGroups = Array.from(interGroups.values()).sort((a, b) => {
+    const da = Math.min(...a.targets.map((t) => Math.abs(t.dstAnchor.x - a.srcAnchor.x) + Math.abs(t.dstAnchor.y - a.srcAnchor.y)));
+    const db = Math.min(...b.targets.map((t) => Math.abs(t.dstAnchor.x - b.srcAnchor.x) + Math.abs(t.dstAnchor.y - b.srcAnchor.y)));
+    return da - db;
+  });
+
+  sortedInterGroups.forEach((group, gIdx) => {
+    const srcExit = getAnchorExit(group.srcAnchor);
+    reservedAprons.delete(`${srcExit.x},${srcExit.y}`);
+
+    const sortedTargets = [...group.targets].sort((a, b) => {
+      const da = Math.abs(a.dstAnchor.x - srcExit.x) + Math.abs(a.dstAnchor.y - srcExit.y);
+      const db = Math.abs(b.dstAnchor.x - srcExit.x) + Math.abs(b.dstAnchor.y - srcExit.y);
+      return da - db;
+    });
+
+    const trunkTiles: Array<{ x: number; y: number }> = [
+      { x: group.srcAnchor.x, y: group.srcAnchor.y },
+    ];
+    const reqSpec = { itemId: group.itemId, kind: group.kind };
+
+    sortedTargets.forEach((target, tIdx) => {
+      const dstGoal = getAnchorEntry(target.dstAnchor);
+      reservedAprons.delete(`${dstGoal.x},${dstGoal.y}`);
+      const preferY = Math.round((srcExit.y + dstGoal.y) / 2) + ((gIdx % 3) - 1);
+
+      let ok = false;
+      if (tIdx === 0) {
+        ok = routeExternalFeederPath(
+          grid,
+          srcExit,
+          dstGoal,
+          reqSpec,
+          beltName,
+          undergroundName,
+          interBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            preferY,
+            maxExpansions: 60000,
+            onStamp: (pts) => trunkTiles.push(...pts),
+          }
+        );
+        if (!ok && !interiorBounds) {
+          const wideBounds = {
+            minX: interBounds.minX - 10,
+            maxX: interBounds.maxX + 10,
+            minY: interBounds.minY - 8,
+            maxY: interBounds.maxY + 8,
+          };
+          ok = routeExternalFeederPath(
+            grid,
+            srcExit,
+            dstGoal,
+            reqSpec,
+            beltName,
+            undergroundName,
+            wideBounds,
+            beltMaxJump,
+            {
+              reservedAprons,
+              preferY,
+              maxExpansions: 80000,
+              onStamp: (pts) => trunkTiles.push(...pts),
+            }
+          );
+        }
+      } else {
+        ok = branchFromTrunkAndRoute(
+          grid,
+          trunkTiles,
+          dstGoal,
+          reqSpec,
+          beltName,
+          undergroundName,
+          splitterName,
+          interBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            preferY,
+            onStamp: (pts) => trunkTiles.push(...pts),
+          }
+        );
+        if (!ok && !interiorBounds) {
+          const wideBounds = {
+            minX: interBounds.minX - 10,
+            maxX: interBounds.maxX + 10,
+            minY: interBounds.minY - 8,
+            maxY: interBounds.maxY + 8,
+          };
+          ok = branchFromTrunkAndRoute(
+            grid,
+            trunkTiles,
+            dstGoal,
+            reqSpec,
+            beltName,
+            undergroundName,
+            splitterName,
+            wideBounds,
+            beltMaxJump,
+            {
+              reservedAprons,
+              preferY,
+              onStamp: (pts) => trunkTiles.push(...pts),
+            }
+          );
+        }
+      }
+
+      if (!ok) {
+        placeFeederTile(grid, dstGoal.x, dstGoal.y, reqSpec, beltName, dstGoal.dir);
+      }
+    });
+  });
+
+  // 5. Raw / External Input Feeders + Port Markers (Distributed OR Consolidated Train/Bus)
+  interface RawConsumerEntry {
+    anchor: StageAnchor;
+    ratePerSec: number;
+    beltsRequired: number;
+  }
   interface GroupedRawPortRequest {
     key: string;
     itemId: string;
@@ -1470,62 +1883,495 @@ export function synthesizeFactoryLayout(
     kind: 'item' | 'fluid';
     ratePerSec: number;
     beltsRequired: number;
-    anchor: { x: number; y: number; itemId: string; kind: 'item' | 'fluid' };
+    anchor: StageAnchor;
+    consumers: RawConsumerEntry[];
   }
 
-  const rawRequestByAnchor = new Map<string, GroupedRawPortRequest>();
-  for (const edge of solveResult.edges) {
-    if (!edge.sourceStageId.startsWith('RAW:')) continue;
-    const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-    const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-    if (!dst) continue;
+  const consolidateByItem = Boolean(options.trainStation || inputSide !== 'distributed');
+  let rawRequests: GroupedRawPortRequest[] = [];
 
-    const anchorKey = `${dst.kind}:${dst.x},${dst.y}`;
-    const existing = rawRequestByAnchor.get(anchorKey);
-    if (existing) {
-      if (existing.itemId !== edge.itemId && !existing.partnerItemId) {
-        existing.partnerItemId = edge.itemId;
+  if (consolidateByItem) {
+    // Consolidate consumers by (kind, itemId) so each raw material uses ceil(totalBelts)
+    // ports instead of duplicating overlapping wagon/bus ports per stage.
+    const rawByItem = new Map<
+      string,
+      {
+        itemId: string;
+        kind: 'item' | 'fluid';
+        totalRatePerSec: number;
+        totalBelts: number;
+        consumers: RawConsumerEntry[];
       }
-      existing.ratePerSec += edge.actualRatePerSec;
-      existing.beltsRequired += edge.beltsRequired;
-    } else {
-      rawRequestByAnchor.set(anchorKey, {
-        key: anchorKey,
-        itemId: edge.itemId,
-        kind: edge.kind,
+    >();
+
+    for (const edge of solveResult.edges) {
+      if (!edge.sourceStageId.startsWith('RAW:')) continue;
+      const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
+      const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
+      if (!dst) continue;
+
+      const iKey = `${edge.kind}:${edge.itemId}`;
+      const existing = rawByItem.get(iKey);
+      const consumer: RawConsumerEntry = {
+        anchor: dst,
         ratePerSec: edge.actualRatePerSec,
         beltsRequired: edge.beltsRequired,
-        anchor: dst,
+      };
+      if (existing) {
+        existing.totalRatePerSec += edge.actualRatePerSec;
+        existing.totalBelts += edge.beltsRequired;
+        const dup = existing.consumers.find(
+          (c) => c.anchor.x === dst.x && c.anchor.y === dst.y && c.anchor.entryX === dst.entryX
+        );
+        if (dup) {
+          dup.ratePerSec += edge.actualRatePerSec;
+          dup.beltsRequired += edge.beltsRequired;
+        } else {
+          existing.consumers.push(consumer);
+        }
+      } else {
+        rawByItem.set(iKey, {
+          itemId: edge.itemId,
+          kind: edge.kind,
+          totalRatePerSec: edge.actualRatePerSec,
+          totalBelts: edge.beltsRequired,
+          consumers: [consumer],
+        });
+      }
+    }
+
+    for (const [iKey, itemGroup] of rawByItem.entries()) {
+      const sortedConsumers = [...itemGroup.consumers].sort(
+        (a, b) => b.anchor.y - a.anchor.y || a.anchor.x - b.anchor.x
+      );
+      const numPorts =
+        itemGroup.kind === 'item'
+          ? Math.max(1, Math.min(sortedConsumers.length, Math.ceil(itemGroup.totalBelts - 1e-6)))
+          : 1;
+
+      const buckets: RawConsumerEntry[][] = Array.from({ length: numPorts }, () => []);
+      sortedConsumers.forEach((c, idx) => {
+        buckets[idx % numPorts].push(c);
+      });
+
+      buckets.forEach((bucket, bIdx) => {
+        if (bucket.length === 0) return;
+        const rateSum = bucket.reduce((s, c) => s + c.ratePerSec, 0);
+        const beltSum = bucket.reduce((s, c) => s + c.beltsRequired, 0);
+        rawRequests.push({
+          key: numPorts === 1 ? iKey : `${iKey}#${bIdx}`,
+          itemId: itemGroup.itemId,
+          kind: itemGroup.kind,
+          ratePerSec: rateSum,
+          beltsRequired: beltSum,
+          anchor: bucket[0].anchor,
+          consumers: bucket,
+        });
       });
     }
+  } else {
+    const rawRequestByAnchor = new Map<string, GroupedRawPortRequest>();
+    for (const edge of solveResult.edges) {
+      if (!edge.sourceStageId.startsWith('RAW:')) continue;
+      const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
+      const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
+      if (!dst) continue;
+
+      const e = getAnchorEntry(dst);
+      const anchorKey = `${dst.kind}:${e.x},${e.y}`;
+      const existing = rawRequestByAnchor.get(anchorKey);
+      if (existing) {
+        if (existing.itemId !== edge.itemId && !existing.partnerItemId) {
+          existing.partnerItemId = edge.itemId;
+        }
+        existing.ratePerSec += edge.actualRatePerSec;
+        existing.beltsRequired += edge.beltsRequired;
+      } else {
+        rawRequestByAnchor.set(anchorKey, {
+          key: anchorKey,
+          itemId: edge.itemId,
+          kind: edge.kind,
+          ratePerSec: edge.actualRatePerSec,
+          beltsRequired: edge.beltsRequired,
+          anchor: dst,
+          consumers: [{ anchor: dst, ratePerSec: edge.actualRatePerSec, beltsRequired: edge.beltsRequired }],
+        });
+      }
+    }
+    rawRequests = Array.from(rawRequestByAnchor.values());
   }
 
-  const rawRequests = Array.from(rawRequestByAnchor.values()).sort((a, b) => {
+  rawRequests.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'item' ? -1 : 1;
     if (a.itemId !== b.itemId) return a.itemId.localeCompare(b.itemId);
     return a.anchor.x - b.anchor.x || a.anchor.y - b.anchor.y;
   });
 
-  if (inputSide === 'distributed') {
+  if (options.trainStation && rawRequests.length > 0) {
+    const station = options.trainStation;
+    let railNet = buildRailFlowNetwork(grid.entities);
+
+    // If no rail network exists in this layout yet, place a clean straight siding rail + locked train-stop
+    if (railNet.chains.length === 0) {
+      const horiz = station.direction === 4 || station.direction === 12;
+      const stepX = station.direction === 4 ? -1 : station.direction === 12 ? 1 : 0;
+      const stepY = station.direction === 0 ? 1 : station.direction === 8 ? -1 : 0;
+      const stopRailOffsetX = station.direction === 0 ? -2 : station.direction === 8 ? 2 : 0;
+      const stopRailOffsetY = station.direction === 4 ? -2 : station.direction === 12 ? 2 : 0;
+      const totalTrackTiles = (1 + Math.max(1, station.wagonCount)) * 7 + 4;
+
+      grid.place({
+        kind: 'grid-obstacle',
+        name: 'train-stop',
+        tileX: station.tileX,
+        tileY: station.tileY,
+        width: 2,
+        height: 2,
+        direction: station.direction,
+        isGridFrame: true,
+      });
+
+      for (let d = -2; d <= totalTrackTiles; d += 2) {
+        const rx = station.tileX + stopRailOffsetX + stepX * d;
+        const ry = station.tileY + stopRailOffsetY + stepY * d;
+        grid.place({
+          kind: 'grid-obstacle',
+          name: 'straight-rail',
+          tileX: rx,
+          tileY: ry,
+          width: 2,
+          height: 2,
+          direction: horiz ? 4 : 0,
+          isGridFrame: true,
+        });
+      }
+      railNet = buildRailFlowNetwork(grid.entities);
+    }
+
+    const prodEntities = grid.entities.filter((e) => !e.isGridFrame);
+    const preBounds = computeLayoutStats(
+      prodEntities.length > 0 ? prodEntities : grid.entities
+    ).bounds;
+    const factoryCenter = interiorBounds
+      ? {
+          x: (interiorBounds.minX + interiorBounds.maxX) / 2,
+          y: (interiorBounds.minY + interiorBounds.maxY) / 2,
+        }
+      : {
+          x: (preBounds.minX + preBounds.maxX) / 2,
+          y: (preBounds.minY + preBounds.maxY) / 2,
+        };
+
+    const trainPlan = computeTrainWagonPlan(solveResult.rawInputs, index, {
+      wagonCount: station.wagonCount,
+      slotsPerWagon: station.slotsPerWagon ?? 40,
+      stackSizeOverrides: station.stackSizeOverrides,
+    });
+    const carPoses = computeTrainCarPosesOnNetwork(railNet, station, factoryCenter);
+    const wagonPoses = carPoses.slice(1); // cargo wagons 1..N
+
+    // Count how many belt requests map to each wagon so we spread unloading ports cleanly along the 6-tile wagon length
+    const wagonReqCounts = new Map<number, number>();
+    const pickWagonForRequest = (req: GroupedRawPortRequest): number => {
+      if (wagonPoses.length === 0) return 0;
+      if (req.kind === 'item') {
+        const matchingIndices: number[] = [];
+        trainPlan.wagons.forEach((w, idx) => {
+          if (idx < wagonPoses.length && w.slices.some((s) => s.itemId === req.itemId)) {
+            matchingIndices.push(idx);
+          }
+        });
+        if (matchingIndices.length > 0) {
+          let bestIdx = matchingIndices[0];
+          let bestLoad = wagonReqCounts.get(bestIdx) ?? 0;
+          for (const wi of matchingIndices) {
+            const load = wagonReqCounts.get(wi) ?? 0;
+            if (load < bestLoad) {
+              bestLoad = load;
+              bestIdx = wi;
+            }
+          }
+          return bestIdx;
+        }
+      }
+      let bestIdx = req.kind === 'fluid' ? wagonPoses.length - 1 : 0;
+      let bestLoad = wagonReqCounts.get(bestIdx) ?? 0;
+      for (let wi = 0; wi < wagonPoses.length; wi++) {
+        const load = wagonReqCounts.get(wi) ?? 0;
+        if (load < bestLoad) {
+          bestLoad = load;
+          bestIdx = wi;
+        }
+      }
+      return bestIdx;
+    };
+
+    const assignedSlots = rawRequests.map((req) => {
+      const wIdx = pickWagonForRequest(req);
+      const slotInWagon = wagonReqCounts.get(wIdx) ?? 0;
+      wagonReqCounts.set(wIdx, slotInWagon + 1);
+      return { req, wIdx, slotInWagon };
+    });
+
+    interface WagonUnloadPlacement {
+      req: GroupedRawPortRequest;
+      headX: number;
+      headY: number;
+      insX: number;
+      insY: number;
+      outDir: Direction;
+      portSide: 'south' | 'west' | 'north' | 'east';
+    }
+
+    const unloadPlacements: WagonUnloadPlacement[] = [];
+
+    for (const { req, wIdx, slotInWagon } of assignedSlots) {
+      const pose = wagonPoses[wIdx] ?? carPoses[0];
+      const totalOnWagon = Math.max(1, wagonReqCounts.get(wIdx) ?? 1);
+      const longOffset =
+        totalOnWagon === 1
+          ? 0
+          : -2 + (4 * slotInWagon) / Math.max(1, totalOnWagon - 1);
+
+      const outDir: Direction =
+        Math.abs(pose.factoryNormalX) >= Math.abs(pose.factoryNormalY)
+          ? pose.factoryNormalX >= 0
+            ? 4
+            : 12
+          : pose.factoryNormalY >= 0
+            ? 8
+            : 0;
+      const { dx, dy } = dirDelta(outDir);
+      const portSide: 'south' | 'west' | 'north' | 'east' =
+        outDir === 0
+          ? 'south'
+          : outDir === 4
+            ? 'west'
+            : outDir === 8
+              ? 'north'
+              : 'east';
+
+      let headX = Math.round(pose.centerX + pose.forwardX * longOffset + dx * 2.5 - 0.5);
+      let headY = Math.round(pose.centerY + pose.forwardY * longOffset + dy * 2.5 - 0.5);
+      let foundHead = false;
+
+      const isReserved = (x: number, y: number) =>
+        unloadPlacements.some(
+          (u) => (u.headX === x && u.headY === y) || (u.insX === x && u.insY === y)
+        ) || reservedAprons.has(`${x},${y}`);
+
+      for (let dist = 2.5; dist <= 8.5 && !foundHead; dist += 1) {
+        for (const shift of [0, 1, -1, 2, -2]) {
+          const tx = Math.round(
+            pose.centerX + pose.forwardX * (longOffset + shift) + dx * dist - 0.5
+          );
+          const ty = Math.round(
+            pose.centerY + pose.forwardY * (longOffset + shift) + dy * dist - 0.5
+          );
+          const ix = tx - dx;
+          const iy = ty - dy;
+          const inserterOk =
+            req.kind !== 'item' || (grid.canPlace(ix, iy, 1, 1) && !isReserved(ix, iy));
+          if (!grid.getAt(tx, ty) && !isReserved(tx, ty) && inserterOk) {
+            headX = tx;
+            headY = ty;
+            foundHead = true;
+            break;
+          }
+        }
+      }
+
+      if (!foundHead) {
+        for (let dist = 2.5; dist <= 8.5 && !foundHead; dist += 1) {
+          for (const shift of [0, 1, -1, 2, -2]) {
+            const tx = Math.round(
+              pose.centerX + pose.forwardX * (longOffset + shift) + dx * dist - 0.5
+            );
+            const ty = Math.round(
+              pose.centerY + pose.forwardY * (longOffset + shift) + dy * dist - 0.5
+            );
+            if (!grid.getAt(tx, ty) && !isReserved(tx, ty)) {
+              headX = tx;
+              headY = ty;
+              foundHead = true;
+              break;
+            }
+          }
+        }
+      }
+
+      const insX = headX - dx;
+      const insY = headY - dy;
+
+      if (req.kind === 'item' && grid.canPlace(insX, insY, 1, 1)) {
+        grid.place({
+          kind: 'inserter',
+          name: inserterName,
+          tileX: insX,
+          tileY: insY,
+          width: 1,
+          height: 1,
+          direction: outDir,
+          inserterReach: 1,
+          inserterItems: req.partnerItemId
+            ? [req.itemId, req.partnerItemId]
+            : [req.itemId],
+        });
+      }
+
+      unloadPlacements.push({ req, headX, headY, insX, insY, outDir, portSide });
+    }
+
+    // Reserve ALL unloading heads in a Set (instead of pre-placing on grid) so
+    // earlier belts never trample other heads while each head can still jump
+    // underground immediately at tile 0 if adjacent space is crowded!
+    const allHeadKeys = new Set<string>(unloadPlacements.map((u) => `${u.headX},${u.headY}`));
+
+    let rMinX = interiorBounds ? interiorBounds.minX : preBounds.minX - 16;
+    let rMaxX = interiorBounds ? interiorBounds.maxX - 1 : preBounds.maxX + 16;
+    let rMinY = interiorBounds ? interiorBounds.minY : preBounds.minY - 14;
+    let rMaxY = interiorBounds ? interiorBounds.maxY - 1 : preBounds.maxY + 14;
+    for (const u of unloadPlacements) {
+      rMinX = Math.min(rMinX, u.headX - 12);
+      rMaxX = Math.max(rMaxX, u.headX + 12);
+      rMinY = Math.min(rMinY, u.headY - 12);
+      rMaxY = Math.max(rMaxY, u.headY + 12);
+    }
+    const trainRoutingBounds = { minX: rMinX, maxX: rMaxX, minY: rMinY, maxY: rMaxY };
+
+    // Sort placements so consumers closest to their wagon unload head route first cleanly
+    const sortedPlacements = [...unloadPlacements].sort((a, b) => {
+      const ca = getAnchorEntry(a.req.consumers[0].anchor);
+      const cb = getAnchorEntry(b.req.consumers[0].anchor);
+      return (
+        Math.abs(ca.x - a.headX) +
+        Math.abs(ca.y - a.headY) -
+        (Math.abs(cb.x - b.headX) + Math.abs(cb.y - b.headY))
+      );
+    });
+
+    for (const u of sortedPlacements) {
+      const headKey = `${u.headX},${u.headY}`;
+      const blockedOthers = new Set<string>(allHeadKeys);
+      blockedOthers.delete(headKey);
+
+      const orderedConsumers = [...u.req.consumers].sort((a, b) => {
+        const ea = getAnchorEntry(a.anchor);
+        const eb = getAnchorEntry(b.anchor);
+        return (
+          Math.abs(ea.x - u.headX) +
+          Math.abs(ea.y - u.headY) -
+          (Math.abs(eb.x - u.headX) + Math.abs(eb.y - u.headY))
+        );
+      });
+
+      const primaryGoal = getAnchorEntry(orderedConsumers[0].anchor);
+      reservedAprons.delete(`${primaryGoal.x},${primaryGoal.y}`);
+
+      const routed = routeExternalFeederPath(
+        grid,
+        { x: u.headX, y: u.headY, dir: u.outDir },
+        primaryGoal,
+        u.req,
+        beltName,
+        undergroundName,
+        trainRoutingBounds,
+        beltMaxJump,
+        {
+          reservedAprons,
+          blockedCells: blockedOthers,
+          maxExpansions: 60000,
+          onStamp: (pts) => recordRawTrunk(u.req.kind, u.req.itemId, pts),
+        }
+      );
+
+      if (!routed) {
+        // Retry once with expanded corridor bounds around factory perimeter + higher search budget
+        const wideTrainBounds = {
+          minX: trainRoutingBounds.minX - 8,
+          maxX: trainRoutingBounds.maxX + 8,
+          minY: trainRoutingBounds.minY - 8,
+          maxY: trainRoutingBounds.maxY + 8,
+        };
+        const retried = routeExternalFeederPath(
+          grid,
+          { x: u.headX, y: u.headY, dir: u.outDir },
+          primaryGoal,
+          u.req,
+          beltName,
+          undergroundName,
+          wideTrainBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            blockedCells: blockedOthers,
+            maxExpansions: 100000,
+            onStamp: (pts) => recordRawTrunk(u.req.kind, u.req.itemId, pts),
+          }
+        );
+        if (!retried) {
+          placeFeederTile(grid, u.headX, u.headY, u.req, beltName, u.outDir);
+        }
+      }
+
+      // Branch via 2×1 splitter (or pipe tap) to every additional consumer using this item
+      const trunkList = rawTrunksByItem.get(`${u.req.kind}:${u.req.itemId}`) ?? [];
+      for (let ci = 1; ci < orderedConsumers.length; ci++) {
+        const subGoal = getAnchorEntry(orderedConsumers[ci].anchor);
+        reservedAprons.delete(`${subGoal.x},${subGoal.y}`);
+        branchFromTrunkAndRoute(
+          grid,
+          trunkList,
+          subGoal,
+          u.req,
+          beltName,
+          undergroundName,
+          splitterName,
+          trainRoutingBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            blockedCells: blockedOthers,
+            onStamp: (pts) => recordRawTrunk(u.req.kind, u.req.itemId, pts),
+          }
+        );
+      }
+
+      ports.push({
+        id: `IN:${u.req.key}`,
+        directionType: 'input',
+        itemId: u.req.itemId,
+        partnerItemId: u.req.partnerItemId,
+        kind: u.req.kind,
+        tileX: u.headX,
+        tileY: u.headY,
+        ratePerSec: u.req.ratePerSec,
+        beltsRequired: u.req.beltsRequired,
+        side: u.portSide,
+      });
+    }
+  } else if (inputSide === 'distributed') {
     for (const req of rawRequests) {
-      const { anchor } = req;
+      const entry = getAnchorEntry(req.anchor);
+      const baseAnchorX = entry.x;
+      const baseAnchorY = entry.y - 1;
       const stubLen = interiorBounds ? 2 : 3;
-      let actualTipY = anchor.y;
+      let actualTipY = baseAnchorY;
       for (let dy = 1; dy <= stubLen; dy++) {
-        const py = anchor.y + dy;
+        const py = baseAnchorY + dy;
         if (interiorBounds && py >= interiorBounds.maxY) break;
         if (req.kind === 'item') {
-          if (grid.placeOrMergeBelt(anchor.x, py, beltName, 0, {
+          if (grid.placeOrMergeBelt(baseAnchorX, py, beltName, 0, {
             left: req.itemId,
             right: req.partnerItemId ?? req.itemId,
           })) {
             actualTipY = py;
           }
-        } else if (grid.canPlace(anchor.x, py, 1, 1)) {
+        } else if (grid.canPlace(baseAnchorX, py, 1, 1)) {
           grid.place({
             kind: 'pipe',
             name: 'pipe',
-            tileX: anchor.x,
+            tileX: baseAnchorX,
             tileY: py,
             width: 1,
             height: 1,
@@ -1541,7 +2387,7 @@ export function synthesizeFactoryLayout(
         itemId: req.itemId,
         partnerItemId: req.partnerItemId,
         kind: req.kind,
-        tileX: anchor.x,
+        tileX: baseAnchorX,
         tileY: actualTipY,
         ratePerSec: req.ratePerSec,
         beltsRequired: req.beltsRequired,
@@ -1593,24 +2439,62 @@ export function synthesizeFactoryLayout(
         return { req, slotX };
       });
 
+      const allSlotHeads = new Set<string>(slots.map((s) => `${s.slotX},${entryY - 1}`));
+
       slots.forEach(({ req, slotX }) => {
-        const targetEntry = findBestFeederTarget(grid, req.anchor);
+        const blockedOthers = new Set<string>(allSlotHeads);
+        blockedOthers.delete(`${slotX},${entryY - 1}`);
+
+        const orderedConsumers = [...req.consumers].sort((a, b) => {
+          const ea = getAnchorEntry(a.anchor);
+          const eb = getAnchorEntry(b.anchor);
+          return Math.abs(ea.x - slotX) + Math.abs(ea.y - entryY) - (Math.abs(eb.x - slotX) + Math.abs(eb.y - entryY));
+        });
+
+        const primaryGoal = getAnchorEntry(orderedConsumers[0].anchor);
+        reservedAprons.delete(`${primaryGoal.x},${primaryGoal.y}`);
+
         const routed = routeExternalFeederPath(
           grid,
           { x: slotX, y: entryY - 1, dir: 0 },
-          targetEntry,
+          primaryGoal,
           req,
           beltName,
           undergroundName,
-          southRoutingBounds
+          southRoutingBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            blockedCells: blockedOthers,
+            maxExpansions: 60000,
+            onStamp: (pts) => recordRawTrunk(req.kind, req.itemId, pts),
+          }
         );
 
         if (!routed) {
-          for (let dy = 1; dy <= 2; dy++) {
-            if (!interiorBounds || req.anchor.y + dy < interiorBounds.maxY) {
-              placeFeederTile(grid, req.anchor.x, req.anchor.y + dy, req, beltName, 0);
+          placeFeederTile(grid, primaryGoal.x, primaryGoal.y, req, beltName, 0);
+        }
+
+        const trunkList = rawTrunksByItem.get(`${req.kind}:${req.itemId}`) ?? [];
+        for (let ci = 1; ci < orderedConsumers.length; ci++) {
+          const subGoal = getAnchorEntry(orderedConsumers[ci].anchor);
+          reservedAprons.delete(`${subGoal.x},${subGoal.y}`);
+          branchFromTrunkAndRoute(
+            grid,
+            trunkList,
+            subGoal,
+            req,
+            beltName,
+            undergroundName,
+            splitterName,
+            southRoutingBounds,
+            beltMaxJump,
+            {
+              reservedAprons,
+              blockedCells: blockedOthers,
+              onStamp: (pts) => recordRawTrunk(req.kind, req.itemId, pts),
             }
-          }
+          );
         }
 
         ports.push({
@@ -1652,24 +2536,62 @@ export function synthesizeFactoryLayout(
         return { req, slotY };
       });
 
+      const allSlotHeads = new Set<string>(slots.map((s) => `${entryX + 1},${s.slotY}`));
+
       slots.forEach(({ req, slotY }) => {
-        const targetEntry = findBestFeederTarget(grid, req.anchor);
+        const blockedOthers = new Set<string>(allSlotHeads);
+        blockedOthers.delete(`${entryX + 1},${slotY}`);
+
+        const orderedConsumers = [...req.consumers].sort((a, b) => {
+          const ea = getAnchorEntry(a.anchor);
+          const eb = getAnchorEntry(b.anchor);
+          return Math.abs(ea.x - entryX) + Math.abs(ea.y - slotY) - (Math.abs(eb.x - entryX) + Math.abs(eb.y - slotY));
+        });
+
+        const primaryGoal = getAnchorEntry(orderedConsumers[0].anchor);
+        reservedAprons.delete(`${primaryGoal.x},${primaryGoal.y}`);
+
         const routed = routeExternalFeederPath(
           grid,
           { x: entryX + 1, y: slotY, dir: 4 },
-          targetEntry,
+          primaryGoal,
           req,
           beltName,
           undergroundName,
-          westRoutingBounds
+          westRoutingBounds,
+          beltMaxJump,
+          {
+            reservedAprons,
+            blockedCells: blockedOthers,
+            maxExpansions: 60000,
+            onStamp: (pts) => recordRawTrunk(req.kind, req.itemId, pts),
+          }
         );
 
         if (!routed) {
-          for (let dy = 1; dy <= 2; dy++) {
-            if (!interiorBounds || req.anchor.y + dy < interiorBounds.maxY) {
-              placeFeederTile(grid, req.anchor.x, req.anchor.y + dy, req, beltName, 0);
+          placeFeederTile(grid, primaryGoal.x, primaryGoal.y, req, beltName, 0);
+        }
+
+        const trunkList = rawTrunksByItem.get(`${req.kind}:${req.itemId}`) ?? [];
+        for (let ci = 1; ci < orderedConsumers.length; ci++) {
+          const subGoal = getAnchorEntry(orderedConsumers[ci].anchor);
+          reservedAprons.delete(`${subGoal.x},${subGoal.y}`);
+          branchFromTrunkAndRoute(
+            grid,
+            trunkList,
+            subGoal,
+            req,
+            beltName,
+            undergroundName,
+            splitterName,
+            westRoutingBounds,
+            beltMaxJump,
+            {
+              reservedAprons,
+              blockedCells: blockedOthers,
+              onStamp: (pts) => recordRawTrunk(req.kind, req.itemId, pts),
             }
-          }
+          );
         }
 
         ports.push({
@@ -1794,22 +2716,6 @@ export function synthesizeFactoryLayout(
   return finalizeLayout(grid.entities, zones, ports, compactionMode, gridFitReport);
 }
 
-function findBestFeederTarget(
-  grid: OccupancyGrid,
-  anchor: { x: number; y: number; itemId: string; kind: 'item' | 'fluid' }
-): { x: number; y: number; dir: Direction } {
-  const below = grid.getAt(anchor.x, anchor.y + 1);
-  if (!below) {
-    return { x: anchor.x, y: anchor.y + 1, dir: 0 };
-  }
-  for (let dy = 1; dy <= 3; dy++) {
-    if (!grid.getAt(anchor.x, anchor.y + dy)) {
-      return { x: anchor.x, y: anchor.y + dy, dir: 0 };
-    }
-  }
-  return { x: anchor.x, y: anchor.y + 1, dir: 0 };
-}
-
 function placeFeederTile(
   grid: OccupancyGrid,
   x: number,
@@ -1859,10 +2765,29 @@ function routeExternalFeederPath(
   req: { itemId: string; partnerItemId?: string; kind: 'item' | 'fluid' },
   beltName: string,
   undergroundName: string,
-  bounds: { minX: number; maxX: number; minY: number; maxY: number }
+  bounds: { minX: number; maxX: number; minY: number; maxY: number },
+  beltJumpOverride?: number,
+  options?: {
+    reservedAprons?: Set<string>;
+    blockedCells?: Set<string>;
+    preferY?: number;
+    maxExpansions?: number;
+    onStamp?: (pts: Array<{ x: number; y: number }>) => void;
+  }
 ): boolean {
+  const reservedAprons = options?.reservedAprons;
+  const blockedCells = options?.blockedCells;
+  const preferY = options?.preferY;
+  const maxExpansions = options?.maxExpansions ?? 45000;
+
+  const isEndpointTile = (x: number, y: number) =>
+    (x === start.x && y === start.y) || (x === goal.x && y === goal.y);
+
   const canOccupyNormal = (x: number, y: number, dir: Direction): boolean => {
     if (x < bounds.minX || x > bounds.maxX || y < bounds.minY || y > bounds.maxY) return false;
+    const k = `${x},${y}`;
+    if (blockedCells?.has(k)) return false;
+    if (reservedAprons?.has(k) && !isEndpointTile(x, y)) return false;
     const ex = grid.getAt(x, y);
     if (!ex) return true;
     if (req.kind === 'item') {
@@ -1903,7 +2828,7 @@ function routeExternalFeederPath(
   ];
   const openHeap: number[] = [0];
   const bestCost = new Map<string, number>();
-  bestCost.set(`${start.x},${start.y},${start.dir}`, 0);
+  bestCost.set(`${start.x},${start.y},${start.dir},0`, 0);
 
   const pushHeap = (idx: number) => {
     openHeap.push(idx);
@@ -1942,11 +2867,11 @@ function routeExternalFeederPath(
   };
 
   const allDirs: Direction[] = [0, 4, 8, 12];
-  const maxJump = req.kind === 'fluid' ? 8 : 5;
+  const maxJump = req.kind === 'fluid' ? 9 : beltJumpOverride ?? 5;
   let goalIdx = -1;
   let expansions = 0;
 
-  while (openHeap.length > 0 && expansions < 8000) {
+  while (openHeap.length > 0 && expansions < maxExpansions) {
     const curIdx = popHeap();
     const cur = nodes[curIdx];
     expansions++;
@@ -1956,18 +2881,32 @@ function routeExternalFeederPath(
       break;
     }
 
-    const curStateKey = `${cur.x},${cur.y},${cur.dir}`;
+    const curStateKey = `${cur.x},${cur.y},${cur.dir},${cur.stepType === 'underground' ? 1 : 0}`;
     if (cur.g > (bestCost.get(curStateKey) ?? Infinity) + 1e-6) continue;
 
-    // 1. Normal 1-tile steps
+    // 1. Normal 1-tile steps (an underground exit hood must eject straight ahead along cur.dir)
     for (const ndir of allDirs) {
+      if (cur.stepType === 'underground' && ndir !== cur.dir) continue;
+      if (ndir === ((cur.dir + 8) % 16)) continue;
       const { dx, dy } = dirDelta(ndir);
       const nx = cur.x + dx;
       const ny = cur.y + dy;
       if (!canOccupyNormal(nx, ny, ndir)) continue;
+
+      let selfOverlap = false;
+      for (let p = cur.parentIdx, depth = 0; p !== -1 && depth < 6; p = nodes[p].parentIdx, depth++) {
+        if (nodes[p].x === nx && nodes[p].y === ny) {
+          selfOverlap = true;
+          break;
+        }
+      }
+      if (selfOverlap) continue;
+
       const turnPenalty = ndir === cur.dir ? 0 : 0.6;
-      const ng = cur.g + 1 + turnPenalty;
-      const nKey = `${nx},${ny},${ndir}`;
+      const laneHintBias =
+        preferY !== undefined && ndir % 8 === 4 && ny === preferY ? -0.15 : 0;
+      const ng = cur.g + Math.max(0.25, 1 + turnPenalty + laneHintBias);
+      const nKey = `${nx},${ny},${ndir},0`;
       if (ng < (bestCost.get(nKey) ?? Infinity)) {
         bestCost.set(nKey, ng);
         const h = Math.abs(goal.x - nx) + Math.abs(goal.y - ny);
@@ -1985,15 +2924,27 @@ function routeExternalFeederPath(
       }
     }
 
-    // 2. Underground belt / pipe-to-ground jumps across perpendicular belts/obstacles
-    if (curIdx !== 0 && !grid.getAt(cur.x, cur.y)) {
+    // 2. Underground belt / pipe-to-ground jumps across belts, aprons, machines, rails, or poles
+    const curEnt = grid.getAt(cur.x, cur.y);
+    const canStartUndergroundHere =
+      cur.stepType === 'normal' &&
+      (!curEnt || (cur.x === start.x && cur.y === start.y && !curEnt.isGridFrame));
+    if (canStartUndergroundHere) {
       for (const ndir of allDirs) {
+        if (ndir === ((cur.dir + 8) % 16)) continue;
         const { dx, dy } = dirDelta(ndir);
         const adjX = cur.x + dx;
         const adjY = cur.y + dy;
+        const adjKey = `${adjX},${adjY}`;
         const adjEnt = grid.getAt(adjX, adjY);
-        if (!adjEnt) continue; // only jump when there's an obstacle ahead
-        if (adjEnt.kind === 'underground-belt' && (adjEnt.direction % 8) === (ndir % 8)) continue;
+        const adjBlocked =
+          Boolean(adjEnt) ||
+          Boolean(blockedCells?.has(adjKey)) ||
+          (Boolean(reservedAprons?.has(adjKey)) && !(adjX === goal.x && adjY === goal.y));
+        if (!adjBlocked) continue;
+        if (adjEnt && (adjEnt.kind === 'underground-belt' || adjEnt.kind === 'pipe-to-ground') && (adjEnt.direction % 8) === (ndir % 8)) {
+          continue;
+        }
 
         for (let k = 2; k <= maxJump; k++) {
           const lx = cur.x + k * dx;
@@ -2014,9 +2965,16 @@ function routeExternalFeederPath(
           }
           if (axisConflict) break;
 
-          if (!grid.getAt(lx, ly)) {
-            const ng = cur.g + 5 + k * 1.4 + (ndir === cur.dir ? 0 : 0.6);
-            const nKey = `${lx},${ly},${ndir}`;
+          const lKey = `${lx},${ly}`;
+          const canLand =
+            !grid.getAt(lx, ly) &&
+            !blockedCells?.has(lKey) &&
+            (!reservedAprons?.has(lKey) || (lx === goal.x && ly === goal.y));
+
+          if (canLand) {
+            const turnCost = ndir === cur.dir ? 0 : cur.x === start.x && cur.y === start.y ? 0.6 : 4.0;
+            const ng = cur.g + 4.5 + k * 1.2 + turnCost;
+            const nKey = `${lx},${ly},${ndir},1`;
             if (ng < (bestCost.get(nKey) ?? Infinity)) {
               bestCost.set(nKey, ng);
               const h = Math.abs(goal.x - lx) + Math.abs(goal.y - ly);
@@ -2033,7 +2991,6 @@ function routeExternalFeederPath(
               });
               pushHeap(nIdx);
             }
-            break; // shortest valid underground exit in this direction
           }
         }
       }
@@ -2042,7 +2999,6 @@ function routeExternalFeederPath(
 
   if (goalIdx === -1) return false;
 
-  // Reconstruct and stamp entities cleanly onto grid
   const path: PathStep[] = [];
   let cursor = goalIdx;
   while (cursor !== -1) {
@@ -2062,6 +3018,7 @@ function routeExternalFeederPath(
     req.kind === 'item'
       ? { left: req.itemId, right: req.partnerItemId ?? req.itemId }
       : undefined;
+  const stampedSurfacePts: Array<{ x: number; y: number }> = [];
 
   for (let i = 0; i < path.length; i++) {
     const step = path[i];
@@ -2069,6 +3026,10 @@ function routeExternalFeederPath(
     const travelDir = next ? next.dir : goal.dir;
 
     if (next && next.type === 'underground' && next.jumpLen) {
+      const existingStart = grid.getAt(step.x, step.y);
+      if (existingStart && !existingStart.isGridFrame) {
+        grid.remove(existingStart);
+      }
       if (req.kind === 'item') {
         grid.place({
           kind: 'underground-belt',
@@ -2116,71 +3077,250 @@ function routeExternalFeederPath(
           fluidId: req.itemId,
         });
       }
-      i++; // landing tile was placed as output
+      i++;
     } else {
       placeFeederTile(grid, step.x, step.y, req, beltName, travelDir);
+      stampedSurfacePts.push({ x: step.x, y: step.y });
     }
   }
 
+  options?.onStamp?.(stampedSurfacePts);
   return true;
 }
 
-function routeBeltStep(
+function branchFromTrunkAndRoute(
   grid: OccupancyGrid,
-  x: number,
-  y: number,
+  trunkTiles: Array<{ x: number; y: number }>,
+  goal: { x: number; y: number; dir: Direction },
+  req: { itemId: string; partnerItemId?: string; kind: 'item' | 'fluid' },
   beltName: string,
   undergroundName: string,
-  direction: Direction,
-  itemId: string
-): void {
-  const existing = grid.getAt(x, y);
-  if (!existing) {
-    grid.place({
-      kind: 'transport-belt',
-      name: beltName,
-      tileX: x,
-      tileY: y,
-      width: 1,
-      height: 1,
-      direction,
-      beltLanes: { left: itemId, right: itemId },
-    });
-    return;
+  splitterName: string,
+  bounds: { minX: number; maxX: number; minY: number; maxY: number },
+  beltMaxJump: number,
+  options?: {
+    reservedAprons?: Set<string>;
+    blockedCells?: Set<string>;
+    preferY?: number;
+    onStamp?: (pts: Array<{ x: number; y: number }>) => void;
+  }
+): boolean {
+  const reservedAprons = options?.reservedAprons;
+  const blockedCells = options?.blockedCells;
+
+  if (req.kind === 'fluid') {
+    const seen = new Set<string>();
+    const pipeCandidates: Array<{ nx: number; ny: number; dist: number }> = [];
+    for (const pt of trunkTiles) {
+      const k = `${pt.x},${pt.y}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const ent = grid.getAt(pt.x, pt.y);
+      if (!ent || ent.kind !== 'pipe' || ent.isGridFrame) continue;
+      for (const nd of [0, 4, 8, 12] as Direction[]) {
+        const { dx, dy } = dirDelta(nd);
+        const nx = pt.x + dx;
+        const ny = pt.y + dy;
+        const nk = `${nx},${ny}`;
+        if (nx < bounds.minX || nx > bounds.maxX || ny < bounds.minY || ny > bounds.maxY) continue;
+        if (grid.getAt(nx, ny) || blockedCells?.has(nk) || (reservedAprons?.has(nk) && (nx !== goal.x || ny !== goal.y))) {
+          continue;
+        }
+        pipeCandidates.push({ nx, ny, dist: Math.abs(nx - goal.x) + Math.abs(ny - goal.y) });
+      }
+    }
+    pipeCandidates.sort((a, b) => a.dist - b.dist);
+    for (const cand of pipeCandidates.slice(0, 12)) {
+      if (
+        routeExternalFeederPath(
+          grid,
+          { x: cand.nx, y: cand.ny, dir: goal.dir },
+          goal,
+          req,
+          beltName,
+          undergroundName,
+          bounds,
+          beltMaxJump,
+          { ...options, maxExpansions: 60000 }
+        )
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
-  if (existing.kind === 'transport-belt' && existing.direction !== direction) {
-    const dx = direction === 4 ? 1 : direction === 12 ? -1 : 0;
-    const dy = direction === 8 ? 1 : direction === 0 ? -1 : 0;
-    const prev = grid.getAt(x - dx, y - dy);
-    if (prev && prev.kind === 'transport-belt' && prev.direction === direction) {
-      grid.remove(prev);
-      grid.place({
-        kind: 'underground-belt',
-        name: undergroundName,
-        tileX: x - dx,
-        tileY: y - dy,
-        width: 1,
-        height: 1,
-        direction,
-        undergroundType: 'input',
-        beltLanes: { left: itemId, right: itemId },
-      });
-    }
-    if (grid.canPlace(x + dx, y + dy, 1, 1)) {
-      grid.place({
-        kind: 'underground-belt',
-        name: undergroundName,
-        tileX: x + dx,
-        tileY: y + dy,
-        width: 1,
-        height: 1,
-        direction,
-        undergroundType: 'output',
-        beltLanes: { left: itemId, right: itemId },
+  // Solid belt: insert a real 2×1 splitter along an inline trunk belt segment
+  interface SplitterCand {
+    beltEnt: GridEntity;
+    nX: number;
+    nY: number;
+    startX: number;
+    startY: number;
+    dir: Direction;
+    dist: number;
+  }
+  const cands: SplitterCand[] = [];
+  const seenTile = new Set<string>();
+
+  for (const pt of trunkTiles) {
+    const tKey = `${pt.x},${pt.y}`;
+    if (seenTile.has(tKey)) continue;
+    seenTile.add(tKey);
+
+    const ent = grid.getAt(pt.x, pt.y);
+    if (!ent || ent.kind !== 'transport-belt' || ent.isGridFrame) continue;
+    const d = ent.direction;
+    const { dx: fx, dy: fy } = dirDelta(d);
+
+    const prev = grid.getAt(pt.x - fx, pt.y - fy);
+    const hasInlinePrev =
+      Boolean(prev) &&
+      (prev!.kind === 'transport-belt' ||
+        prev!.kind === 'underground-belt' ||
+        prev!.kind === 'splitter' ||
+        prev!.kind === 'inserter') &&
+      prev!.direction === d;
+    if (!hasInlinePrev) continue;
+
+    const perps: Array<[number, number]> =
+      d === 0 || d === 8
+        ? [
+            [1, 0],
+            [-1, 0],
+          ]
+        : [
+            [0, 1],
+            [0, -1],
+          ];
+
+    for (const [px, py] of perps) {
+      const nX = pt.x + px;
+      const nY = pt.y + py;
+      const nKey = `${nX},${nY}`;
+      if (nX < bounds.minX || nX > bounds.maxX || nY < bounds.minY || nY > bounds.maxY) continue;
+      if (grid.getAt(nX, nY) || blockedCells?.has(nKey) || reservedAprons?.has(nKey)) continue;
+
+      const behindN = grid.getAt(nX - fx, nY - fy);
+      if (
+        behindN &&
+        (behindN.kind === 'transport-belt' ||
+          behindN.kind === 'underground-belt' ||
+          behindN.kind === 'splitter') &&
+        behindN.direction === d
+      ) {
+        continue;
+      }
+
+      const startX = nX + fx;
+      const startY = nY + fy;
+      const sKey = `${startX},${startY}`;
+      if (startX < bounds.minX || startX > bounds.maxX || startY < bounds.minY || startY > bounds.maxY) continue;
+      if (
+        grid.getAt(startX, startY) ||
+        blockedCells?.has(sKey) ||
+        (reservedAprons?.has(sKey) && (startX !== goal.x || startY !== goal.y))
+      ) {
+        continue;
+      }
+
+      cands.push({
+        beltEnt: ent,
+        nX,
+        nY,
+        startX,
+        startY,
+        dir: d,
+        dist: Math.abs(startX - goal.x) + Math.abs(startY - goal.y),
       });
     }
   }
+
+  cands.sort((a, b) => a.dist - b.dist);
+
+  for (const cand of cands.slice(0, 14)) {
+    const blockedForRun = new Set<string>(blockedCells ?? []);
+    blockedForRun.add(`${cand.beltEnt.tileX},${cand.beltEnt.tileY}`);
+    blockedForRun.add(`${cand.nX},${cand.nY}`);
+
+    const ok = routeExternalFeederPath(
+      grid,
+      { x: cand.startX, y: cand.startY, dir: cand.dir },
+      goal,
+      req,
+      beltName,
+      undergroundName,
+      bounds,
+      beltMaxJump,
+      {
+        reservedAprons,
+        blockedCells: blockedForRun,
+        preferY: options?.preferY,
+        maxExpansions: 60000,
+        onStamp: options?.onStamp,
+      }
+    );
+
+    if (ok) {
+      const lanes = cand.beltEnt.beltLanes ?? { left: req.itemId, right: req.itemId };
+      const sx = Math.min(cand.beltEnt.tileX, cand.nX);
+      const sy = Math.min(cand.beltEnt.tileY, cand.nY);
+      const horiz = cand.dir === 0 || cand.dir === 8;
+      grid.remove(cand.beltEnt);
+      grid.place({
+        kind: 'splitter',
+        name: splitterName,
+        tileX: sx,
+        tileY: sy,
+        width: horiz ? 2 : 1,
+        height: horiz ? 1 : 2,
+        direction: cand.dir,
+        beltLanes: lanes,
+      });
+      return true;
+    }
+  }
+
+  // Fallback: direct takeoff from any adjacent free tile next to an existing trunk belt
+  const seenAdj = new Set<string>();
+  const adjCands: Array<{ x: number; y: number; dir: Direction; dist: number }> = [];
+  for (const pt of trunkTiles) {
+    const ent = grid.getAt(pt.x, pt.y);
+    if (!ent || ent.kind !== 'transport-belt' || ent.isGridFrame) continue;
+    for (const nd of [0, 4, 8, 12] as Direction[]) {
+      const { dx, dy } = dirDelta(nd);
+      const ax = pt.x + dx;
+      const ay = pt.y + dy;
+      const ak = `${ax},${ay}`;
+      if (seenAdj.has(ak)) continue;
+      seenAdj.add(ak);
+      if (ax < bounds.minX || ax > bounds.maxX || ay < bounds.minY || ay > bounds.maxY) continue;
+      if (grid.getAt(ax, ay) || blockedCells?.has(ak) || (reservedAprons?.has(ak) && (ax !== goal.x || ay !== goal.y))) {
+        continue;
+      }
+      adjCands.push({ x: ax, y: ay, dir: nd, dist: Math.abs(ax - goal.x) + Math.abs(ay - goal.y) });
+    }
+  }
+  adjCands.sort((a, b) => a.dist - b.dist);
+  for (const ac of adjCands.slice(0, 8)) {
+    if (
+      routeExternalFeederPath(
+        grid,
+        { x: ac.x, y: ac.y, dir: ac.dir },
+        goal,
+        req,
+        beltName,
+        undergroundName,
+        bounds,
+        beltMaxJump,
+        { ...options, maxExpansions: 60000 }
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function computeLayoutStats(
