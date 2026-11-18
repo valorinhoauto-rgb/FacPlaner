@@ -131,6 +131,10 @@ export interface Translations {
     alignSameSideCta: string;
     alignSameSideActive: string;
     confirmButton: string;
+    gridAreaWarningTitle: string;
+    gridAreaWarningExceeded: (pct: number, estTiles: number, maxTiles: number, placed: number, requested: number) => string;
+    unrealisticSizeWarningTitle: string;
+    unrealisticSizeWarningDesc: (machines: number, estTiles: number) => string;
   };
   picker: {
     defaultTitle: string;
@@ -243,6 +247,7 @@ export interface Translations {
       pan: string;
       moveProduction: string;
       trainEntrance: string;
+      drawFlow: string;
       belt: string;
       underground: string;
       splitter: string;
@@ -327,6 +332,15 @@ export interface Translations {
     centerProduction: string;
     moveProductionHint: string;
     trainPlannerBtn: string;
+    rotateFactoryBtn: string;
+    rotateFactoryTooltip: string;
+    manualFlowTitle: string;
+    manualFlowHint: string;
+    manualFlowFinish: string;
+    manualFlowUndoPoint: string;
+    manualFlowDeleteLast: string;
+    manualFlowClearAll: string;
+    manualFlowCount: (count: number) => string;
     trainModal: {
       title: string;
       subtitle: string;
@@ -718,6 +732,12 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       alignSameSideCta: 'Alinhar todas as entradas no mesmo lado (Trem)',
       alignSameSideActive: 'Entradas alinhadas no mesmo lado',
       confirmButton: 'Aplicar na Blueprint',
+      gridAreaWarningTitle: 'Aviso: área da grid insuficiente (> 80% ocupada)',
+      gridAreaWarningExceeded: (pct, estTiles, maxTiles, placed, requested) =>
+        `A produção estimada ocupa ~${pct}% da área útil da grid (${estTiles} de ${maxTiles} tiles${placed < requested ? `, cabendo ${placed}/${requested} máquinas` : ''}). Reduza a taxa de produção, mova sub-etapas para entrada externa (Trem) ou importe uma grid maior.`,
+      unrealisticSizeWarningTitle: 'Aviso: escala irreal para uma única blueprint',
+      unrealisticSizeWarningDesc: (machines, estTiles) =>
+        `Esta configuração exige ${machines} máquinas (~${estTiles} tiles²). Divida a cadeia em módulos menores (trazendo intermediários de fora por trem), aumente o nível da esteira/beacons ou reduza a taxa alvo.`,
     },
     picker: {
       defaultTitle: 'Selecionar Produto',
@@ -844,6 +864,7 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         pan: 'Mover Mapa',
         moveProduction: 'Mover Produção',
         trainEntrance: 'Entrada Trem',
+        drawFlow: 'Desenhar Fluxo',
         belt: 'Esteira',
         underground: 'Subterrânea',
         splitter: 'Divisor',
@@ -934,6 +955,15 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       centerProduction: 'Centralizar',
       moveProductionHint: 'Arraste no mapa ou use as setas para ajustar a fábrica manualmente',
       trainPlannerBtn: 'Vagões & Trem',
+      rotateFactoryBtn: 'Girar BP',
+      rotateFactoryTooltip: 'Rotacionar toda a blueprint de produção em 90° (0°/90°/180°/270°) para alinhar as entradas aos trilhos/grid',
+      manualFlowTitle: 'Fluxo Manual nos Trilhos',
+      manualFlowHint: 'Clique nos trilhos para traçar o caminho do fluxo. Botão direito ou duplo-clique finaliza a linha.',
+      manualFlowFinish: 'Concluir linha',
+      manualFlowUndoPoint: 'Desfazer ponto',
+      manualFlowDeleteLast: 'Apagar última linha',
+      manualFlowClearAll: 'Limpar todas',
+      manualFlowCount: (count) => `${count} linha(s) desenhada(s)`,
       trainModal: {
         title: 'Estação de Trem & Cálculo de Slots por Vagão',
         subtitle:
@@ -979,12 +1009,12 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         close: 'Fechar',
         fixedStopsTitle: 'Paradas Existentes na Blueprint (Travadas no Trilho)',
         railLockedHint:
-          'Selecione uma parada existente no trilho abaixo ou clique no mapa para travar uma parada na linha ferroviária.',
-        addStopOnRail: 'Adicionar Parada no Trilho',
+          'Selecione uma parada existente, clique no mapa próximo a um trilho para travar nela, ou posicione uma parada customizada livremente na grid.',
+        addStopOnRail: 'Definir / Posicionar Parada na Grid',
         activeStopBadge: 'Ativa',
-        snapToRailHint: 'Aproxime o cursor de um trilho para travar a parada',
+        snapToRailHint: 'Clique para criar parada customizada neste ponto (ou aproxime do trilho para travar)',
         noRailsDetected:
-          'Sem trilhos importados: ao escolher uma borda, um trilho com parada travada será gerado automaticamente.',
+          'Sem trilhos importados: ao escolher uma borda ou clicar no mapa, um trilho com parada será gerado automaticamente.',
       },
     },
     database: {
@@ -1494,6 +1524,12 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       alignSameSideCta: 'Align all inputs to same side (Train Grid)',
       alignSameSideActive: 'All inputs aligned to same side',
       confirmButton: 'Apply to Blueprint',
+      gridAreaWarningTitle: 'Warning: Grid area exceeded (> 80% occupied)',
+      gridAreaWarningExceeded: (pct, estTiles, maxTiles, placed, requested) =>
+        `Estimated footprint uses ~${pct}% of usable grid area (${estTiles} of ${maxTiles} tiles${placed < requested ? `, only ${placed}/${requested} machines fit` : ''}). Lower the target rate, import intermediates via Train, or load a larger grid.`,
+      unrealisticSizeWarningTitle: 'Warning: Unrealistic scale for a single blueprint',
+      unrealisticSizeWarningDesc: (machines, estTiles) =>
+        `This setup requires ${machines} machines (~${estTiles} tiles²). Split the chain into modular blocks (external train inputs), upgrade belt/beacon tier, or lower the target throughput.`,
     },
     picker: {
       defaultTitle: 'Select Product',
@@ -1620,6 +1656,7 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         pan: 'Pan Map',
         moveProduction: 'Move Factory',
         trainEntrance: 'Train Entrance',
+        drawFlow: 'Draw Flow',
         belt: 'Belt',
         underground: 'Underground',
         splitter: 'Splitter',
@@ -1709,6 +1746,15 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       centerProduction: 'Center',
       moveProductionHint: 'Drag on grid or use arrows to fine-tune factory position',
       trainPlannerBtn: 'Train & Wagons',
+      rotateFactoryBtn: 'Rotate BP',
+      rotateFactoryTooltip: 'Rotate the entire production blueprint by 90° (0°/90°/180°/270°) to align inputs with rails/grid edges',
+      manualFlowTitle: 'Manual Rail Flow',
+      manualFlowHint: 'Click along tracks to draw flow arrows. Right-click or double-click to finish line.',
+      manualFlowFinish: 'Finish line',
+      manualFlowUndoPoint: 'Undo point',
+      manualFlowDeleteLast: 'Delete last line',
+      manualFlowClearAll: 'Clear all',
+      manualFlowCount: (count) => `${count} path(s) drawn`,
       trainModal: {
         title: 'Train Entrance & Cargo Wagon Slot Calculator',
         subtitle:
@@ -1754,12 +1800,12 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         close: 'Close',
         fixedStopsTitle: 'Blueprint Train Stops (Locked to Rail)',
         railLockedHint:
-          'Select an existing train stop on the track below or click on the rail to lock a new stop onto the flow line.',
-        addStopOnRail: 'Add Stop on Rail',
+          'Select an existing train stop, click near a rail on the map to snap onto it, or place a custom stop anywhere inside the grid.',
+        addStopOnRail: 'Place / Position Train Stop',
         activeStopBadge: 'Active',
-        snapToRailHint: 'Move cursor near a rail track to lock the stop',
+        snapToRailHint: 'Click to place a custom train stop here (or move near a rail to snap)',
         noRailsDetected:
-          'No rails imported: choosing an edge will generate a straight track with a locked stop.',
+          'No rails imported: choosing an edge or clicking the grid will generate a straight siding with a train stop.',
       },
     },
     database: {

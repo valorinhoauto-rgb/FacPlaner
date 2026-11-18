@@ -18,23 +18,26 @@ import {
   Maximize,
   MousePointer2,
   Move,
-  Pause,
-  Play,
   RefreshCw,
   RotateCw,
+  Route,
   Share2,
   TrainFront,
+  Trash2,
+  Undo2,
   X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { spritePackStore } from '../../assets/spritePackStore.ts';
+import { wikiEntitySprites } from '../../assets/wikiEntitySprites.ts';
 import type { Direction, PackIndex } from '../../data/schema.ts';
 import { useI18n } from '../../i18n/I18nContext.tsx';
 import type {
   GridEntity,
   GridEntityKind,
   LayoutSynthesisOptions,
+  ManualFlowPath,
   SynthesizedLayout,
   TrainStationConfig,
 } from '../../spatial/types.ts';
@@ -50,13 +53,31 @@ import {
   buildRailFlowNetwork,
   computeTrainCarPosesOnNetwork,
   detectTrainStopsOnNetwork,
-  sampleChainAtArcLength,
   snapStationToRail,
-  type RailFlowNetwork,
 } from '../../spatial/railFlowNetwork.ts';
-import { isRailTrackEntityName } from '../../spatial/railGeometry.ts';
+import {
+  evalRailPointAndNormal,
+  getRailCurveSpec,
+  isRailTrackEntityName,
+} from '../../spatial/railGeometry.ts';
 import { traceMachineProcess } from '../../spatial/processTracer.ts';
 import { computeTrainWagonPlan, type TrainRawInputEntry } from '../../spatial/trainPlanner.ts';
+import {
+  buildEntitySpatialLookup,
+  classifyInserterRole,
+  drawBeaconVectorSprite,
+  drawChamferedWikiSprite,
+  drawElectricPoleVectorSprite,
+  drawGroundObstacleVectorSprite,
+  drawInserterSprite,
+  drawMachineVectorSprite,
+  drawPipeSprite,
+  drawRailSignalVectorSprite,
+  drawSplitterSprite,
+  drawTrainStopVectorSprite,
+  drawTransportBeltSprite,
+  getPipeNeighborMask,
+} from './entitySprites.ts';
 import { TrainPlannerModal } from './TrainPlannerModal.tsx';
 
 type EditorTool =
@@ -64,6 +85,7 @@ type EditorTool =
   | 'pan'
   | 'move-production'
   | 'place-train-station'
+  | 'draw-flow'
   | 'place-belt'
   | 'place-underground'
   | 'place-splitter'
@@ -118,51 +140,67 @@ function getInserterColor(name: string): string {
   return '#EAB308';
 }
 
-function drawUnifiedRailFlowNetwork(
+interface ExactRailDrawItem {
+  ent: GridEntity;
+  drawTileX: number;
+  drawTileY: number;
+}
+
+/**
+ * Draws every imported & synthesized rail entity 1:1 from its exact Factorio blueprint
+ * position and 16-way direction geometry, without guessing or altering rail curves.
+ */
+function drawExactGridRails(
   ctx: CanvasRenderingContext2D,
-  network: RailFlowNetwork,
+  rails: ExactRailDrawItem[],
   pan: { x: number; y: number },
-  zoom: number,
-  tSec: number
+  zoom: number
 ) {
-  if (network.chains.length === 0) return;
+  if (rails.length === 0) return;
+
+  const prepared = rails.map(({ ent, drawTileX, drawTileY }) => ({
+    cx: drawTileX + ent.width / 2,
+    cy: drawTileY + ent.height / 2,
+    spec: getRailCurveSpec(ent.name, ent.rawDirection ?? ent.direction),
+    isRamp: ent.name.includes('rail-ramp'),
+  }));
 
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // 1. Unified flat top-down ballast / track bed along every connected flow chain
+  // 1. Flat ballast track bed
   ctx.strokeStyle = '#181C24';
   ctx.lineWidth = Math.max(3, zoom * 1.46);
-  for (const chain of network.chains) {
-    if (chain.points.length < 2) continue;
+  for (const { cx, cy, spec } of prepared) {
     ctx.beginPath();
-    chain.points.forEach((p, idx) => {
-      const sx = pan.x + p.x * zoom;
-      const sy = pan.y + p.y * zoom;
-      if (idx === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    });
-    if (chain.closed) ctx.closePath();
+    ctx.moveTo(pan.x + (cx + spec.p0.x) * zoom, pan.y + (cy + spec.p0.y) * zoom);
+    if (spec.kind === 'line') {
+      ctx.lineTo(pan.x + (cx + spec.p1.x) * zoom, pan.y + (cy + spec.p1.y) * zoom);
+    } else {
+      ctx.quadraticCurveTo(
+        pan.x + (cx + spec.p1.x) * zoom,
+        pan.y + (cy + spec.p1.y) * zoom,
+        pan.x + (cx + spec.p2.x) * zoom,
+        pan.y + (cy + spec.p2.y) * zoom
+      );
+    }
     ctx.stroke();
   }
 
-  // 2. Uniform wooden sleepers spaced cleanly along continuous arc length
+  // 2. Wooden sleepers perpendicular to the exact piece tangent
   if (zoom >= 3.0) {
     const tieHalf = zoom * 0.62;
-    const pitch = zoom < 6 ? 1.5 : 0.9;
     ctx.strokeStyle = '#574232';
     ctx.lineWidth = Math.max(1.1, zoom * 0.15);
     ctx.lineCap = 'butt';
-
-    for (const chain of network.chains) {
-      if (chain.totalLength < 0.4) continue;
-      const count = Math.max(1, Math.floor(chain.totalLength / pitch));
+    for (const { cx, cy, spec } of prepared) {
+      const count = Math.max(1, spec.tieCount);
       for (let i = 0; i < count; i++) {
-        const s = ((i + 0.5) / count) * chain.totalLength;
-        const pt = sampleChainAtArcLength(chain, s);
-        const px = pan.x + pt.x * zoom;
-        const py = pan.y + pt.y * zoom;
+        const t = (i + 0.5) / count;
+        const pt = evalRailPointAndNormal(spec, t);
+        const px = pan.x + (cx + pt.x) * zoom;
+        const py = pan.y + (cy + pt.y) * zoom;
         ctx.beginPath();
         ctx.moveTo(px + pt.nx * tieHalf, py + pt.ny * tieHalf);
         ctx.lineTo(px - pt.nx * tieHalf, py - pt.ny * tieHalf);
@@ -171,82 +209,151 @@ function drawUnifiedRailFlowNetwork(
     }
   }
 
-  // 3. Two continuous steel rails along the unified flow normal
+  // 3. Twin parallel steel rails offset along exact local normal
   ctx.strokeStyle = '#CBD5E1';
   ctx.lineWidth = Math.max(1, zoom * 0.12);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-
-  for (const chain of network.chains) {
-    if (chain.totalLength < 0.2) continue;
-    const steps = Math.max(2, Math.ceil(chain.totalLength / 0.5));
+  for (const { cx, cy, spec, isRamp } of prepared) {
+    const steps = spec.kind === 'line' ? (isRamp ? 4 : 2) : 10;
     for (const side of [-1, 1]) {
       ctx.beginPath();
       for (let i = 0; i <= steps; i++) {
-        const s = (i / steps) * chain.totalLength;
-        const pt = sampleChainAtArcLength(chain, s);
-        const rx = pan.x + (pt.x + pt.nx * (0.42 * side)) * zoom;
-        const ry = pan.y + (pt.y + pt.ny * (0.42 * side)) * zoom;
+        const pt = evalRailPointAndNormal(spec, i / steps);
+        const rx = pan.x + (cx + pt.x + pt.nx * (0.42 * side)) * zoom;
+        const ry = pan.y + (cy + pt.y + pt.ny * (0.42 * side)) * zoom;
         if (i === 0) ctx.moveTo(rx, ry);
         else ctx.lineTo(rx, ry);
       }
-      if (chain.closed) ctx.closePath();
       ctx.stroke();
-    }
-  }
-
-  // 4. Directional One-Way Flow Chevrons (inferred from signals & train-stops via right-hand rule)
-  const flowPitch = zoom < 6 ? 14 : 10;
-  const arrowSize = Math.max(4.5, Math.min(11, zoom * 0.46));
-  const phase = (tSec * 2.4) % flowPitch;
-
-  for (let ci = 0; ci < network.chains.length; ci++) {
-    const flowSign = network.chainFlows[ci] ?? 0;
-    if (flowSign === 0) continue;
-    const chain = network.chains[ci];
-    if (chain.totalLength < 3.5) continue;
-
-    const count = Math.max(1, Math.floor(chain.totalLength / flowPitch));
-    for (let i = 0; i < count; i++) {
-      const rawS = i * flowPitch + (flowSign === 1 ? phase : flowPitch - phase);
-      const s = chain.closed
-        ? ((rawS % chain.totalLength) + chain.totalLength) % chain.totalLength
-        : Math.max(1.2, Math.min(chain.totalLength - 1.2, rawS));
-      if (!chain.closed && (rawS < 0.8 || rawS > chain.totalLength - 0.8)) continue;
-
-      const pt = sampleChainAtArcLength(chain, s);
-      const fx = pt.tx * flowSign;
-      const fy = pt.ty * flowSign;
-      const px = pan.x + pt.x * zoom;
-      const py = pan.y + pt.y * zoom;
-
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(Math.atan2(fy, fx));
-
-      // Crisp dark contrast outline + golden yellow flow chevron
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = 'rgba(11, 14, 20, 0.82)';
-      ctx.lineWidth = Math.max(3, arrowSize * 0.44);
-      ctx.beginPath();
-      ctx.moveTo(-arrowSize * 0.48, -arrowSize * 0.52);
-      ctx.lineTo(arrowSize * 0.46, 0);
-      ctx.lineTo(-arrowSize * 0.48, arrowSize * 0.52);
-      ctx.stroke();
-
-      ctx.strokeStyle = 'rgba(250, 204, 21, 0.88)';
-      ctx.lineWidth = Math.max(1.6, arrowSize * 0.24);
-      ctx.beginPath();
-      ctx.moveTo(-arrowSize * 0.48, -arrowSize * 0.52);
-      ctx.lineTo(arrowSize * 0.46, 0);
-      ctx.lineTo(-arrowSize * 0.48, arrowSize * 0.52);
-      ctx.stroke();
-      ctx.restore();
     }
   }
 
   ctx.restore();
+}
+
+function drawManualFlowPaths(
+  ctx: CanvasRenderingContext2D,
+  paths: ManualFlowPath[],
+  draftPoints: Array<{ x: number; y: number }>,
+  hoverExact: { x: number; y: number } | null,
+  pan: { x: number; y: number },
+  zoom: number
+) {
+  const renderPolyline = (
+    points: Array<{ x: number; y: number }>,
+    strokeColor: string,
+    arrowColor: string,
+    isDraft: boolean
+  ) => {
+    if (points.length < 2) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Contrast backdrop
+    ctx.strokeStyle = 'rgba(11, 14, 20, 0.85)';
+    ctx.lineWidth = Math.max(4, zoom * 0.24);
+    ctx.beginPath();
+    points.forEach((p, idx) => {
+      const sx = pan.x + p.x * zoom;
+      const sy = pan.y + p.y * zoom;
+      if (idx === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
+
+    // Foreground vector line
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = Math.max(2, zoom * 0.12);
+    if (isDraft) ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    points.forEach((p, idx) => {
+      const sx = pan.x + p.x * zoom;
+      const sy = pan.y + p.y * zoom;
+      if (idx === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Static directional arrowheads along segments
+    const arrowPitch = zoom < 6 ? 12 : 7;
+    const arrowSz = Math.max(5, Math.min(12, zoom * 0.44));
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const segLen = Math.hypot(dx, dy);
+      if (segLen < 0.8) continue;
+      const angle = Math.atan2(dy, dx);
+      const count = Math.max(1, Math.floor(segLen / arrowPitch));
+      for (let k = 0; k < count; k++) {
+        const frac = (k + 0.5) / count;
+        const px = pan.x + (a.x + dx * frac) * zoom;
+        const py = pan.y + (a.y + dy * frac) * zoom;
+
+        ctx.save();
+        ctx.translate(px, py);
+        ctx.rotate(angle);
+        ctx.strokeStyle = 'rgba(11, 14, 20, 0.9)';
+        ctx.lineWidth = Math.max(3, arrowSz * 0.42);
+        ctx.beginPath();
+        ctx.moveTo(-arrowSz * 0.48, -arrowSz * 0.5);
+        ctx.lineTo(arrowSz * 0.46, 0);
+        ctx.lineTo(-arrowSz * 0.48, arrowSz * 0.5);
+        ctx.stroke();
+
+        ctx.strokeStyle = arrowColor;
+        ctx.lineWidth = Math.max(1.8, arrowSz * 0.24);
+        ctx.beginPath();
+        ctx.moveTo(-arrowSz * 0.48, -arrowSz * 0.5);
+        ctx.lineTo(arrowSz * 0.46, 0);
+        ctx.lineTo(-arrowSz * 0.48, arrowSz * 0.5);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // Waypoint handles on draft path
+    if (isDraft) {
+      ctx.fillStyle = arrowColor;
+      for (const p of points) {
+        ctx.beginPath();
+        ctx.arc(pan.x + p.x * zoom, pan.y + p.y * zoom, Math.max(3.5, zoom * 0.16), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  };
+
+  for (const path of paths) {
+    renderPolyline(path.points, 'rgba(34, 211, 238, 0.85)', '#FACC15', false);
+  }
+
+  if (draftPoints.length > 0) {
+    const snappedHover = hoverExact
+      ? { x: Math.round(hoverExact.x * 2) / 2, y: Math.round(hoverExact.y * 2) / 2 }
+      : null;
+    const previewPts = snappedHover ? [...draftPoints, snappedHover] : draftPoints;
+    if (previewPts.length === 1) {
+      ctx.save();
+      ctx.fillStyle = '#F59E0B';
+      ctx.beginPath();
+      ctx.arc(
+        pan.x + previewPts[0].x * zoom,
+        pan.y + previewPts[0].y * zoom,
+        Math.max(4, zoom * 0.18),
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.restore();
+    } else {
+      renderPolyline(previewPts, '#F59E0B', '#FDE68A', true);
+    }
+  }
 }
 
 export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
@@ -280,8 +387,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [selectedEntityNum, setSelectedEntityNum] = useState<number | null>(null);
   const [isolateMachineProcess, setIsolateMachineProcess] = useState(true);
   const [hoverTile, setHoverTile] = useState<{ x: number; y: number } | null>(null);
-  const [animateFlow, setAnimateFlow] = useState(true);
+  const [hoverExactTile, setHoverExactTile] = useState<{ x: number; y: number } | null>(null);
+  const [draftFlowPoints, setDraftFlowPoints] = useState<Array<{ x: number; y: number }>>([]);
   const [spriteTick, setSpriteTick] = useState(0);
+  const [containerSizeTick, setContainerSizeTick] = useState(0);
   const [moveProdPreviewDelta, setMoveProdPreviewDelta] = useState<{ dx: number; dy: number } | null>(
     null
   );
@@ -300,7 +409,19 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [trainModalOpen, setTrainModalOpen] = useState(false);
 
   useEffect(() => {
-    return spritePackStore.subscribe(() => setSpriteTick((t) => t + 1));
+    const unsubLocal = spritePackStore.subscribe(() => setSpriteTick((t) => t + 1));
+    const unsubWiki = wikiEntitySprites.subscribe(() => setSpriteTick((t) => t + 1));
+    const el = containerRef.current;
+    const ro =
+      el && typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => setContainerSizeTick((v) => v + 1))
+        : null;
+    if (ro && el) ro.observe(el);
+    return () => {
+      unsubLocal();
+      unsubWiki();
+      ro?.disconnect();
+    };
   }, []);
 
   const dragStateRef = useRef<{
@@ -321,6 +442,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     () => detectTrainStopsOnNetwork(entities, railFlowNetwork),
     [entities, railFlowNetwork]
   );
+  const entitySpatialLookup = useMemo(() => buildEntitySpatialLookup(entities), [entities]);
 
   const factoryCenter = useMemo(() => {
     if (layout.gridFitReport?.hasGridFrame) {
@@ -411,17 +533,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     [pan, zoom]
   );
 
-  const screenToTile = useCallback(
-    (clientX: number, clientY: number) => {
-      const exact = screenToExactTile(clientX, clientY);
-      return {
-        x: Math.floor(exact.x),
-        y: Math.floor(exact.y),
-      };
-    },
-    [screenToExactTile]
-  );
-
   const findEntityAtTile = useCallback(
     (tx: number, ty: number) => {
       return entities.find((e) => {
@@ -467,7 +578,24 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     setSelectedEntityNum(null);
   }, [selectedEntity, entities, onChangeEntities]);
 
-  // Keyboard shortcuts (R = Rotate, Del/Backspace = Delete, F = Fit)
+  const handleFinishManualFlow = useCallback(
+    (pointsOverride?: Array<{ x: number; y: number }>) => {
+      const pts = pointsOverride ?? draftFlowPoints;
+      if (pts.length >= 2 && onChangeLayoutOptions) {
+        const nextPath: ManualFlowPath = {
+          id: `flow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          points: pts,
+        };
+        onChangeLayoutOptions({
+          manualFlowPaths: [...(layoutOptions?.manualFlowPaths ?? []), nextPath],
+        });
+      }
+      setDraftFlowPoints([]);
+    },
+    [draftFlowPoints, onChangeLayoutOptions, layoutOptions?.manualFlowPaths]
+  );
+
+  // Keyboard shortcuts (R = Rotate, Del/Backspace = Delete, F = Fit, Enter/Esc = Manual Flow)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (
@@ -484,11 +612,23 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         handleDeleteSelected();
       } else if (e.key === 'f' || e.key === 'F') {
         fitToView();
+      } else if (e.key === 'Enter' && tool === 'draw-flow' && draftFlowPoints.length >= 2) {
+        e.preventDefault();
+        handleFinishManualFlow();
+      } else if (e.key === 'Escape' && draftFlowPoints.length > 0) {
+        setDraftFlowPoints([]);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleRotateSelectedOrPreview, handleDeleteSelected, fitToView]);
+  }, [
+    handleRotateSelectedOrPreview,
+    handleDeleteSelected,
+    fitToView,
+    tool,
+    draftFlowPoints.length,
+    handleFinishManualFlow,
+  ]);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const exactTile = screenToExactTile(e.clientX, e.clientY);
@@ -502,6 +642,24 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         startPanX: pan.x,
         startPanY: pan.y,
       };
+      return;
+    }
+
+    if (tool === 'draw-flow') {
+      if (e.button === 2) {
+        return;
+      }
+      const snappedPt = {
+        x: Math.round(exactTile.x * 2) / 2,
+        y: Math.round(exactTile.y * 2) / 2,
+      };
+      setDraftFlowPoints((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && Math.hypot(snappedPt.x - last.x, snappedPt.y - last.y) < 0.4) {
+          return prev;
+        }
+        return [...prev, snappedPt];
+      });
       return;
     }
 
@@ -519,7 +677,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
     if (tool === 'place-train-station' && onChangeTrainStation) {
       if (railStops.length > 0) {
-        // Blueprint already has fixed train-stop(s): lock onto the clicked stop on the rail
         const clickedStop = railStops.find(
           (s) => Math.hypot(exactTile.x - s.stopCenter.x, exactTile.y - s.stopCenter.y) <= 3.5
         );
@@ -534,48 +691,48 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             lockedStopEntityNumber: clickedStop.entityNumber,
           });
           setTool('select');
+          return;
         }
-        return;
       }
 
       if (railFlowNetwork.chains.length > 0) {
-        // Rails exist without a train-stop: allow adding a train-stop strictly locked onto the rail
-        const snap = snapStationToRail(railFlowNetwork, exactTile.x, exactTile.y, 10);
-        if (!snap) return;
-
-        const nextConfig: TrainStationConfig = {
-          tileX: snap.tileX,
-          tileY: snap.tileY,
-          direction: snap.direction,
-          wagonCount: trainStation?.wagonCount ?? 2,
-          slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
-          stackSizeOverrides: trainStation?.stackSizeOverrides ?? {},
-        };
-        const stopEntity: GridEntity = {
-          entityNumber: entities.reduce((m, x) => Math.max(m, x.entityNumber), 0) + 1,
-          kind: 'grid-obstacle',
-          name: 'train-stop',
-          tileX: snap.tileX,
-          tileY: snap.tileY,
-          width: 2,
-          height: 2,
-          direction: snap.direction,
-          isGridFrame: true,
-        };
-        if (onAddTrainStopToFrame) {
-          onAddTrainStopToFrame(stopEntity, nextConfig);
-        } else {
-          onChangeEntities([...entities, stopEntity]);
-          onChangeTrainStation({
-            ...nextConfig,
-            lockedStopEntityNumber: stopEntity.entityNumber,
-          });
+        // Snap if cursor is close to an imported rail; otherwise place a free custom stop anywhere inside the grid
+        const snap = snapStationToRail(railFlowNetwork, exactTile.x, exactTile.y, 4);
+        if (snap) {
+          const nextConfig: TrainStationConfig = {
+            tileX: snap.tileX,
+            tileY: snap.tileY,
+            direction: snap.direction,
+            wagonCount: trainStation?.wagonCount ?? 2,
+            slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
+            stackSizeOverrides: trainStation?.stackSizeOverrides ?? {},
+          };
+          const stopEntity: GridEntity = {
+            entityNumber: entities.reduce((m, x) => Math.max(m, x.entityNumber), 0) + 1,
+            kind: 'grid-obstacle',
+            name: 'train-stop',
+            tileX: snap.tileX,
+            tileY: snap.tileY,
+            width: 2,
+            height: 2,
+            direction: snap.direction,
+            isGridFrame: true,
+          };
+          if (onAddTrainStopToFrame) {
+            onAddTrainStopToFrame(stopEntity, nextConfig);
+          } else {
+            onChangeEntities([...entities, stopEntity]);
+            onChangeTrainStation({
+              ...nextConfig,
+              lockedStopEntityNumber: stopEntity.entityNumber,
+            });
+          }
+          setTool('select');
+          return;
         }
-        setTool('select');
-        return;
       }
 
-      // No rails exist yet: create station config (synthesizer will build straight rail + stop)
+      // Free placement anywhere on the grid (synthesizer will build a siding + stop there)
       onChangeTrainStation({
         tileX: tile.x,
         tileY: tile.y,
@@ -600,7 +757,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     if (tool.startsWith('place-')) {
       const beltDef = index.beltsById.get(defaultBeltId) ?? index.pack.belts[0];
       let kind: GridEntityKind = 'transport-belt';
-      let name = beltDef?.id ?? 'express-transport-belt';
+      let name = beltDef?.id ?? 'transport-belt';
       let width = 1;
       let height = 1;
 
@@ -694,8 +851,10 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const tile = screenToTile(e.clientX, e.clientY);
+    const exact = screenToExactTile(e.clientX, e.clientY);
+    const tile = { x: Math.floor(exact.x), y: Math.floor(exact.y) };
     setHoverTile(tile);
+    setHoverExactTile(exact);
 
     const ds = dragStateRef.current;
     if (ds.mode === 'pan') {
@@ -756,11 +915,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     setZoom(nextZoom);
   };
 
-  // --- 60 FPS Canvas 2D Renderer ---
+  // --- Static On-Demand Canvas 2D Renderer (Zero Idle CPU) ---
   useEffect(() => {
-    let rafId = 0;
-
-    const renderFrame = (timeMs: number) => {
+    const renderFrame = () => {
       const canvas = canvasRef.current;
       const container = containerRef.current;
       if (!canvas || !container) return;
@@ -787,7 +944,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       ctx.fillStyle = '#121316';
       ctx.fillRect(0, 0, width, height);
 
-      const tSec = animateFlow ? timeMs / 1000 : 0;
+      const tSec = 0;
 
       // Visible tile range (viewport culling!)
       const startTileX = Math.floor(-pan.x / zoom) - 2;
@@ -897,6 +1054,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       }
 
       const groundObstacles: DrawItem[] = [];
+      const railDrawItems: ExactRailDrawItem[] = [];
       const productionItems: DrawItem[] = [];
       const signalAndStopItems: DrawItem[] = [];
       let selectedDrawItem: DrawItem | null = null;
@@ -931,13 +1089,8 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         if (ent.kind === 'grid-obstacle') {
           if (ent.name.includes('rail-signal') || ent.name.includes('train-stop')) {
             signalAndStopItems.push(item);
-          } else if (
-            isRailTrackEntityName(ent.name) ||
-            ent.name.includes('rail-ramp') ||
-            ent.name.includes('rail-support')
-          ) {
-            // Top-down mode flattens elevations & draws continuous flow via drawUnifiedRailFlowNetwork
-            continue;
+          } else if (isRailTrackEntityName(ent.name) || ent.name.includes('rail-ramp')) {
+            railDrawItems.push({ ent, drawTileX, drawTileY });
           } else {
             groundObstacles.push(item);
           }
@@ -946,42 +1099,35 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         }
       }
 
-      // Pass 1: Non-rail Ground Obstacles (Walls, Roboports, Solar, etc.) & Unified Railway Flow Network
+      // Pass 1: Non-rail Ground Obstacles (Walls, Roboports, Solar, Chests, Rail Supports)
       ctx.save();
       if (machineProcessTrace) ctx.globalAlpha = 0.25;
       for (const { ent, x, y, w, h } of groundObstacles) {
         const obsImg = spritePackStore.resolveImage(ent.name);
+        const wikiObsImg = !obsImg ? wikiEntitySprites.resolveImage(ent.name) : undefined;
         if (obsImg) {
           ctx.drawImage(obsImg, x + 1, y + 1, w - 2, h - 2);
-        } else if (ent.name.includes('roboport')) {
-          ctx.fillStyle = '#29221A';
-          ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
-          ctx.strokeStyle = '#F59E0B';
-          ctx.lineWidth = 1.6;
-          ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
-          ctx.fillStyle = '#B45309';
-          ctx.fillRect(x + w * 0.18, y + h * 0.18, w * 0.64, h * 0.64);
-          ctx.fillStyle = '#34D399';
-          ctx.fillRect(x + w * 0.25, y + h * 0.25, w * 0.14, h * 0.14);
-          ctx.fillRect(x + w * 0.61, y + h * 0.25, w * 0.14, h * 0.14);
-        } else if (ent.name.includes('wall') || ent.name.includes('gate')) {
-          ctx.fillStyle = ent.name.includes('gate') ? '#854D0E' : '#475569';
-          ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-          ctx.strokeStyle = ent.name.includes('gate') ? '#FACC15' : '#94A3B8';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-        } else if (ent.name.includes('solar-panel')) {
-          ctx.fillStyle = '#0F2544';
-          ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
-          ctx.strokeStyle = '#38BDF8';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+        } else if (wikiObsImg) {
+          const borderCol = ent.accentColor
+            ? ent.accentColor
+            : ent.name.includes('roboport')
+              ? '#F59E0B'
+              : ent.name.includes('chest')
+                ? '#94A3B8'
+                : '#475569';
+          drawChamferedWikiSprite(ctx, wikiObsImg, x, y, w, h, zoom, borderCol, 1.2, 0.09);
         } else {
-          ctx.fillStyle = '#262932';
-          ctx.fillRect(x + 1.5, y + 1.5, w - 3, h - 3);
-          ctx.strokeStyle = '#64748B';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+          drawGroundObstacleVectorSprite(ctx, ent, x, y, w, h, zoom, tSec, false);
+        }
+        if (ent.chestFilterItem && zoom >= 10) {
+          const dotCol = index.resourcesById.get(ent.chestFilterItem)?.color ?? ent.accentColor ?? '#38BDF8';
+          ctx.fillStyle = dotCol;
+          ctx.beginPath();
+          ctx.arc(x + w * 0.78, y + h * 0.24, Math.max(2.2, zoom * 0.14), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#0B0E14';
+          ctx.lineWidth = 0.9;
+          ctx.stroke();
         }
       }
       ctx.restore();
@@ -1000,120 +1146,57 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
         if (ent.kind === 'transport-belt' || ent.kind === 'underground-belt') {
           const beltColor = getBeltColor(ent.name);
-          ctx.fillStyle = '#1E242E';
-          ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-          ctx.strokeStyle = beltColor;
-          ctx.lineWidth = Math.max(1, zoom * 0.08);
-          ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
-
-          const cx = x + w / 2;
-          const cy = y + h / 2;
-          const angle = (ent.direction / 16) * Math.PI * 2;
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.rotate(angle);
-
-          const phase = ((tSec * 2) % 1) * (zoom * 0.32) - zoom * 0.16;
-          ctx.strokeStyle = beltColor;
-          ctx.lineWidth = Math.max(1.2, zoom * 0.08);
-          ctx.beginPath();
-          ctx.moveTo(-zoom * 0.22, zoom * 0.14 + phase);
-          ctx.lineTo(0, -zoom * 0.12 + phase);
-          ctx.lineTo(zoom * 0.22, zoom * 0.14 + phase);
-          ctx.stroke();
-
-          if (ent.beltLanes && zoom >= 12) {
-            const drawLaneItem = (itemId: string | undefined, laneOffsetX: number) => {
-              if (!itemId) return;
-              const res = index.resourcesById.get(itemId);
-              const resColor = res?.color ?? '#E2E8F0';
-              const itemSize = Math.max(4, zoom * 0.28);
-              const shift = ((tSec * 1.6) % 1) * zoom - zoom * 0.5;
-              const itemImg = zoom >= 14 ? spritePackStore.resolveImage(itemId, res?.iconPath) : undefined;
-              if (itemImg) {
-                ctx.drawImage(
-                  itemImg,
-                  laneOffsetX - itemSize / 2,
-                  -shift - itemSize / 2,
-                  itemSize,
-                  itemSize
-                );
-              } else {
-                ctx.fillStyle = resColor;
-                ctx.fillRect(
-                  laneOffsetX - itemSize * 0.4,
-                  -shift - itemSize * 0.4,
-                  itemSize * 0.8,
-                  itemSize * 0.8
-                );
-              }
+          drawTransportBeltSprite(ctx, ent, x, y, w, h, zoom, tSec, beltColor, (itemId) => {
+            const res = index.resourcesById.get(itemId);
+            return {
+              color: res?.color ?? '#E2E8F0',
+              img: zoom >= 14 ? spritePackStore.resolveImage(itemId, res?.iconPath) : undefined,
             };
-            drawLaneItem(ent.beltLanes.left, -zoom * 0.22);
-            drawLaneItem(ent.beltLanes.right, zoom * 0.22);
-          }
-
-          if (ent.kind === 'underground-belt') {
-            ctx.fillStyle = '#0B0E14';
-            ctx.fillRect(-zoom * 0.34, -zoom * 0.34, zoom * 0.68, zoom * 0.32);
-            ctx.strokeStyle = beltColor;
-            ctx.strokeRect(-zoom * 0.34, -zoom * 0.34, zoom * 0.68, zoom * 0.32);
-          }
-
-          ctx.restore();
+          });
         } else if (ent.kind === 'splitter') {
           const beltColor = getBeltColor(ent.name);
-          ctx.fillStyle = '#252E3C';
-          ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-          ctx.strokeStyle = beltColor;
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
-          ctx.fillStyle = beltColor;
-          ctx.fillRect(x + w * 0.15, y + h * 0.42, w * 0.7, Math.max(2, h * 0.16));
+          drawSplitterSprite(ctx, ent, x, y, w, h, zoom, tSec, beltColor);
         } else if (ent.kind === 'pipe' || ent.kind === 'pipe-to-ground') {
           const fluidColor = ent.fluidId
             ? index.resourcesById.get(ent.fluidId)?.color ?? '#06B6D4'
             : '#06B6D4';
-          ctx.fillStyle = '#1D2733';
-          ctx.fillRect(x + zoom * 0.2, y + 1, w - zoom * 0.4, h - 2);
-          ctx.fillStyle = fluidColor;
-          ctx.fillRect(x + zoom * 0.35, y + zoom * 0.2, w - zoom * 0.7, h - zoom * 0.4);
-          ctx.strokeStyle = '#64748B';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + zoom * 0.2, y + 1, w - zoom * 0.4, h - 2);
+          const mask = getPipeNeighborMask(ent, entitySpatialLookup);
+          drawPipeSprite(ctx, ent, x, y, w, h, zoom, fluidColor, mask);
         } else if (ent.kind === 'inserter') {
           const insColor = getInserterColor(ent.name);
-          const cx = x + w / 2;
-          const cy = y + h / 2;
-          const angle = (ent.direction / 16) * Math.PI * 2;
-          const swing = animateFlow ? Math.sin(tSec * 4 + ent.entityNumber) * 0.35 : 0;
-
-          ctx.save();
-          ctx.translate(cx, cy);
-          ctx.rotate(angle + swing);
-          ctx.fillStyle = '#1E2530';
-          ctx.fillRect(-zoom * 0.24, -zoom * 0.24, zoom * 0.48, zoom * 0.48);
-          ctx.strokeStyle = insColor;
-          ctx.lineWidth = 1.25;
-          ctx.strokeRect(-zoom * 0.24, -zoom * 0.24, zoom * 0.48, zoom * 0.48);
-          const reachLen = ent.inserterReach === 2 ? zoom * 0.78 : zoom * 0.55;
-          ctx.strokeStyle = insColor;
-          ctx.lineWidth = Math.max(1.8, zoom * 0.14);
-          ctx.beginPath();
-          ctx.moveTo(0, zoom * 0.25);
-          ctx.lineTo(0, -reachLen);
-          ctx.stroke();
-          ctx.fillStyle = '#F8FAFC';
-          ctx.beginPath();
-          ctx.arc(0, -reachLen, Math.max(2, zoom * 0.1), 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
+          const role = classifyInserterRole(ent, entitySpatialLookup);
+          const handItemId = ent.inserterItems?.[0];
+          const handItemColor = handItemId
+            ? index.resourcesById.get(handItemId)?.color
+            : undefined;
+          drawInserterSprite(
+            ctx,
+            ent,
+            x,
+            y,
+            w,
+            h,
+            zoom,
+            tSec,
+            false,
+            role,
+            insColor,
+            handItemColor
+          );
         } else if (ent.kind === 'beacon') {
           const isSingularity = ent.name.includes('singularity');
-          const bAccent = isSingularity ? '#A855F7' : '#38BDF8';
           const beaconDef = index.beaconsById.get(ent.name);
           const beaconImg = spritePackStore.resolveImage(ent.name, beaconDef?.iconPath);
+          const wikiBeaconImg = !beaconImg ? wikiEntitySprites.resolveImage(ent.name) : undefined;
 
-          if (isSelected || (hoverTile && hoverTile.x >= ent.tileX && hoverTile.x < ent.tileX + ent.width && hoverTile.y >= ent.tileY && hoverTile.y < ent.tileY + ent.height)) {
+          if (
+            isSelected ||
+            (hoverTile &&
+              hoverTile.x >= ent.tileX &&
+              hoverTile.x < ent.tileX + ent.width &&
+              hoverTile.y >= ent.tileY &&
+              hoverTile.y < ent.tileY + ent.height)
+          ) {
             const rad = (isSingularity ? 2 : 3) * zoom;
             ctx.save();
             ctx.fillStyle = isSingularity ? 'rgba(168, 85, 247, 0.08)' : 'rgba(56, 189, 248, 0.08)';
@@ -1125,31 +1208,18 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             ctx.restore();
           }
 
-          ctx.fillStyle = '#192230';
-          ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
-          ctx.strokeStyle = isStageSelected ? '#F59E0B' : bAccent;
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
-
           if (beaconImg) {
+            ctx.fillStyle = '#192230';
+            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.strokeStyle = isStageSelected ? '#F59E0B' : isSingularity ? '#A855F7' : '#38BDF8';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
             ctx.drawImage(beaconImg, x + w * 0.1, y + h * 0.1, w * 0.8, h * 0.8);
+          } else if (wikiBeaconImg) {
+            const strokeCol = isStageSelected ? '#F59E0B' : isSingularity ? '#A855F7' : '#38BDF8';
+            drawChamferedWikiSprite(ctx, wikiBeaconImg, x, y, w, h, zoom, strokeCol, 1.5, 0.09);
           } else {
-            const pulse = animateFlow ? 0.55 + Math.sin(tSec * 3.5 + ent.entityNumber) * 0.25 : 0.7;
-            ctx.strokeStyle = bAccent;
-            ctx.globalAlpha = pulse * itemAlpha;
-            ctx.beginPath();
-            ctx.arc(x + w / 2, y + h / 2, w * 0.34, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.globalAlpha = itemAlpha;
-
-            ctx.fillStyle = bAccent;
-            ctx.beginPath();
-            ctx.moveTo(x + w / 2, y + h * 0.24);
-            ctx.lineTo(x + w * 0.76, y + h / 2);
-            ctx.lineTo(x + w / 2, y + h * 0.76);
-            ctx.lineTo(x + w * 0.24, y + h / 2);
-            ctx.closePath();
-            ctx.fill();
+            drawBeaconVectorSprite(ctx, ent, x, y, w, h, zoom, tSec, false, Boolean(isStageSelected));
           }
 
           if (ent.moduleIds && ent.moduleIds.length > 0 && zoom >= 12) {
@@ -1167,7 +1237,15 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         } else if (ent.kind === 'electric-pole') {
           const poleDef = index.pack.electricPoles?.find((p) => p.id === ent.name);
           const poleImg = spritePackStore.resolveImage(ent.name, poleDef?.iconPath);
-          if (isSelected || (hoverTile && hoverTile.x >= ent.tileX && hoverTile.x < ent.tileX + ent.width && hoverTile.y >= ent.tileY && hoverTile.y < ent.tileY + ent.height)) {
+          const wikiPoleImg = !poleImg ? wikiEntitySprites.resolveImage(ent.name) : undefined;
+          if (
+            isSelected ||
+            (hoverTile &&
+              hoverTile.x >= ent.tileX &&
+              hoverTile.x < ent.tileX + ent.width &&
+              hoverTile.y >= ent.tileY &&
+              hoverTile.y < ent.tileY + ent.height)
+          ) {
             const areaRad = (poleDef?.supplyAreaDistance ?? 3.5) * zoom;
             ctx.save();
             ctx.fillStyle = 'rgba(56, 189, 248, 0.09)';
@@ -1180,101 +1258,81 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
           if (poleImg) {
             ctx.drawImage(poleImg, x + 1, y + 1, w - 2, h - 2);
+          } else if (wikiPoleImg) {
+            drawChamferedWikiSprite(
+              ctx,
+              wikiPoleImg,
+              x,
+              y,
+              w,
+              h,
+              zoom,
+              ent.width >= 2 ? '#38BDF8' : undefined,
+              1.1,
+              0.09
+            );
           } else {
-            ctx.fillStyle = '#242F3E';
-            ctx.fillRect(x + w * 0.25, y + h * 0.25, w * 0.5, h * 0.5);
-            ctx.strokeStyle = '#94A3B8';
-            ctx.lineWidth = 1.2;
-            ctx.strokeRect(x + w * 0.25, y + h * 0.25, w * 0.5, h * 0.5);
-            ctx.beginPath();
-            ctx.moveTo(x + w * 0.15, y + h * 0.5);
-            ctx.lineTo(x + w * 0.85, y + h * 0.5);
-            ctx.stroke();
-            ctx.fillStyle = '#38BDF8';
-            ctx.beginPath();
-            ctx.arc(x + w / 2, y + h / 2, Math.max(2, w * 0.16), 0, Math.PI * 2);
-            ctx.fill();
+            drawElectricPoleVectorSprite(ctx, ent, x, y, w, h, zoom);
           }
         } else if (ent.kind === 'machine') {
           const accent = ent.accentColor ?? '#60A5FA';
           const machineDef = index.machinesById.get(ent.name);
           const machineImg = spritePackStore.resolveImage(ent.name, machineDef?.iconPath);
-
-          ctx.fillStyle = ent.name.startsWith('kr-') ? '#1D1B2A' : '#1C2430';
-          ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
-          ctx.strokeStyle = isStageSelected
-            ? '#F59E0B'
-            : ent.name.startsWith('kr-')
-              ? '#6D28D9'
-              : '#3B485C';
-          ctx.lineWidth = isStageSelected ? 2 : 1.5;
-          ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+          const wikiMachineImg = !machineImg ? wikiEntitySprites.resolveImage(ent.name) : undefined;
 
           if (machineImg) {
+            ctx.fillStyle = ent.name.startsWith('kr-') ? '#1D1B2A' : '#1C2430';
+            ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+            ctx.strokeStyle = isStageSelected
+              ? '#F59E0B'
+              : ent.name.startsWith('kr-')
+                ? '#6D28D9'
+                : '#3B485C';
+            ctx.lineWidth = isStageSelected ? 2 : 1.5;
+            ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
             ctx.drawImage(machineImg, x + 4, y + 4, w - 8, h - 8);
+          } else if (wikiMachineImg) {
+            const strokeCol = isStageSelected
+              ? '#F59E0B'
+              : ent.name.startsWith('kr-')
+                ? '#8B5CF6'
+                : accent;
+            drawChamferedWikiSprite(
+              ctx,
+              wikiMachineImg,
+              x,
+              y,
+              w,
+              h,
+              zoom,
+              strokeCol,
+              isStageSelected ? 2.2 : 1.4,
+              0.09
+            );
           } else {
-            ctx.fillStyle = '#12171F';
-            ctx.fillRect(x + w * 0.14, y + h * 0.14, w * 0.72, h * 0.72);
-            ctx.strokeStyle = accent;
-            ctx.lineWidth = 1.1;
-            ctx.strokeRect(x + w * 0.14, y + h * 0.14, w * 0.72, h * 0.72);
-
-            const cx = x + w / 2;
-            const cy = y + h / 2;
-
-            if (ent.name.includes('foundry') || ent.name.includes('furnace')) {
-              const glow = animateFlow ? 0.65 + Math.sin(tSec * 3 + ent.entityNumber) * 0.2 : 0.75;
-              ctx.fillStyle = `rgba(249, 115, 22, ${glow})`;
-              ctx.beginPath();
-              ctx.arc(cx, cy, Math.min(w, h) * 0.24, 0, Math.PI * 2);
-              ctx.fill();
-            } else if (ent.name.includes('electromagnetic')) {
-              ctx.strokeStyle = '#D97706';
-              ctx.lineWidth = Math.max(1.5, zoom * 0.09);
-              ctx.beginPath();
-              ctx.arc(cx - w * 0.16, cy, Math.min(w, h) * 0.14, 0, Math.PI * 2);
-              ctx.arc(cx + w * 0.16, cy, Math.min(w, h) * 0.14, 0, Math.PI * 2);
-              ctx.stroke();
-              ctx.strokeStyle = '#F472B6';
-              ctx.beginPath();
-              ctx.moveTo(cx - w * 0.16, cy);
-              ctx.lineTo(cx, cy + (animateFlow ? Math.sin(tSec * 12) * h * 0.08 : 0));
-              ctx.lineTo(cx + w * 0.16, cy);
-              ctx.stroke();
-            } else if (ent.name.includes('cryogenic')) {
-              ctx.fillStyle = 'rgba(34, 211, 238, 0.35)';
-              ctx.fillRect(x + w * 0.2, y + h * 0.22, w * 0.25, h * 0.56);
-              ctx.fillRect(x + w * 0.55, y + h * 0.22, w * 0.25, h * 0.56);
-            } else if (ent.name.includes('refinery') || ent.name.includes('chemical') || ent.name.includes('filtration') || ent.name.includes('electrolysis') || ent.name.includes('condenser')) {
-              ctx.strokeStyle = '#38BDF8';
-              ctx.lineWidth = 1.2;
-              ctx.beginPath();
-              ctx.arc(cx - w * 0.14, cy - h * 0.1, Math.min(w, h) * 0.12, 0, Math.PI * 2);
-              ctx.arc(cx + w * 0.14, cy + h * 0.1, Math.min(w, h) * 0.12, 0, Math.PI * 2);
-              ctx.stroke();
-            } else {
-              ctx.save();
-              ctx.translate(cx, cy);
-              ctx.rotate(animateFlow ? tSec * 1.4 + ent.entityNumber * 0.4 : 0);
-              ctx.strokeStyle = '#64748B';
-              ctx.lineWidth = Math.max(1.5, zoom * 0.08);
-              const rGear = Math.min(w, h) * 0.24;
-              ctx.beginPath();
-              ctx.arc(0, 0, rGear, 0, Math.PI * 2);
-              ctx.moveTo(-rGear * 1.25, 0);
-              ctx.lineTo(rGear * 1.25, 0);
-              ctx.moveTo(0, -rGear * 1.25);
-              ctx.lineTo(0, rGear * 1.25);
-              ctx.stroke();
-              ctx.restore();
-            }
+            drawMachineVectorSprite(
+              ctx,
+              ent,
+              x,
+              y,
+              w,
+              h,
+              zoom,
+              tSec,
+              false,
+              accent,
+              Boolean(isStageSelected)
+            );
           }
 
           const recipe = ent.recipeId ? index.recipesById.get(ent.recipeId) : undefined;
           const recipeRes = recipe ? index.resourcesById.get(recipe.mainProductId) : undefined;
           const recipeImg =
             ent.recipeId && zoom >= 12
-              ? spritePackStore.resolveImage(recipe?.mainProductId ?? ent.recipeId, recipe?.iconPath ?? recipeRes?.iconPath)
+              ? spritePackStore.resolveImage(
+                  recipe?.mainProductId ?? ent.recipeId,
+                  recipe?.iconPath ?? recipeRes?.iconPath
+                )
               : undefined;
 
           if (recipeImg) {
@@ -1290,22 +1348,23 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               badgeSize,
               badgeSize
             );
-          } else {
-            ctx.fillStyle = accent;
+          } else if (zoom >= 15 && ent.recipeId) {
+            const label = ent.recipeId.replace(/^kr-/, '').slice(0, 5).toUpperCase();
+            const pillR = Math.max(8, Math.min(w, h) * 0.22);
+            ctx.fillStyle = 'rgba(11, 14, 20, 0.85)';
             ctx.beginPath();
-            ctx.arc(x + w / 2, y + h / 2, Math.max(3, Math.min(w, h) * 0.16), 0, Math.PI * 2);
+            ctx.arc(x + w / 2, y + h / 2, pillR, 0, Math.PI * 2);
             ctx.fill();
-
-            if (zoom >= 16 && ent.recipeId) {
-              const label = ent.recipeId.replace(/^kr-/, '').slice(0, 5).toUpperCase();
-              ctx.fillStyle = '#0B0E14';
-              ctx.font = `700 ${Math.max(7, Math.floor(zoom * 0.23))}px "JetBrains Mono", monospace`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              ctx.fillText(label, x + w / 2, y + h / 2 + 0.5);
-              ctx.textAlign = 'start';
-              ctx.textBaseline = 'alphabetic';
-            }
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+            ctx.fillStyle = '#F8FAFC';
+            ctx.font = `700 ${Math.max(7, Math.floor(zoom * 0.21))}px "JetBrains Mono", monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, x + w / 2, y + h / 2 + 0.5);
+            ctx.textAlign = 'start';
+            ctx.textBaseline = 'alphabetic';
           }
 
           if (ent.moduleIds && ent.moduleIds.length > 0 && zoom >= 12) {
@@ -1351,52 +1410,67 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         ctx.restore();
       }
 
-      // Pass 3: Continuous Top-Down Railway Flow Line (Flat, no elevation clutter)
+      // Pass 3: Exact 1:1 Imported & Generated Rail Tracks + Manual User Flow Overlay
       ctx.save();
       if (machineProcessTrace) ctx.globalAlpha = 0.25;
-      drawUnifiedRailFlowNetwork(ctx, railFlowNetwork, pan, zoom, tSec);
+      drawExactGridRails(ctx, railDrawItems, pan, zoom);
+      drawManualFlowPaths(
+        ctx,
+        layoutOptions?.manualFlowPaths ?? [],
+        draftFlowPoints,
+        hoverExactTile,
+        pan,
+        zoom
+      );
 
       // Pass 4: Rail Signals, Chain Signals & Fixed Train Stops on top of the rail flow
       for (const { ent, x, y, w, h, cx, cy } of signalAndStopItems) {
         if (ent.name.includes('rail-signal')) {
-          const isChain = ent.name.includes('chain');
-          ctx.fillStyle = '#0F172A';
-          ctx.beginPath();
-          ctx.arc(cx, cy, Math.max(2.6, Math.min(w, h) * 0.38), 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = '#475569';
-          ctx.lineWidth = Math.max(0.8, zoom * 0.06);
-          ctx.stroke();
-          ctx.fillStyle = isChain ? '#38BDF8' : '#22C55E';
-          ctx.beginPath();
-          ctx.arc(cx, cy, Math.max(1.6, Math.min(w, h) * 0.22), 0, Math.PI * 2);
-          ctx.fill();
+          drawRailSignalVectorSprite(ctx, ent, cx, cy, w, h, zoom);
         } else {
           const isActiveStop =
             trainStation &&
             (trainStation.lockedStopEntityNumber === ent.entityNumber ||
               (trainStation.tileX === ent.tileX && trainStation.tileY === ent.tileY));
           const isSelectingStop = tool === 'place-train-station' && railStops.length > 0;
-
-          ctx.fillStyle = isActiveStop ? '#7F1D1D' : '#451A1A';
-          ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
-          ctx.strokeStyle = isActiveStop ? '#F59E0B' : isSelectingStop ? '#22D3EE' : '#EF4444';
-          ctx.lineWidth = Math.max(isActiveStop ? 2.2 : 1.4, zoom * 0.11);
-          ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-
-          if (isActiveStop || isSelectingStop) {
-            ctx.save();
-            ctx.strokeStyle = isActiveStop ? 'rgba(245, 158, 11, 0.7)' : 'rgba(34, 211, 238, 0.75)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([4, 3]);
-            ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
-            ctx.restore();
+          const wikiStopImg = wikiEntitySprites.resolveImage('train-stop');
+          if (wikiStopImg) {
+            const stopStroke = isActiveStop ? '#F59E0B' : isSelectingStop ? '#22D3EE' : '#EF4444';
+            drawChamferedWikiSprite(
+              ctx,
+              wikiStopImg,
+              x,
+              y,
+              w,
+              h,
+              zoom,
+              stopStroke,
+              isActiveStop ? 2.2 : 1.4,
+              0.09
+            );
+            if (isActiveStop || isSelectingStop) {
+              ctx.save();
+              ctx.strokeStyle = isActiveStop ? 'rgba(245, 158, 11, 0.75)' : 'rgba(34, 211, 238, 0.8)';
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([4, 3]);
+              ctx.strokeRect(x - 3, y - 3, w + 6, h + 6);
+              ctx.restore();
+            }
+          } else {
+            drawTrainStopVectorSprite(
+              ctx,
+              ent,
+              x,
+              y,
+              w,
+              h,
+              zoom,
+              cx,
+              cy,
+              Boolean(isActiveStop),
+              isSelectingStop
+            );
           }
-
-          ctx.fillStyle = isActiveStop ? '#FDE68A' : '#FCA5A5';
-          ctx.beginPath();
-          ctx.arc(cx, cy, Math.max(2, Math.min(w, h) * 0.24), 0, Math.PI * 2);
-          ctx.fill();
         }
       }
       ctx.restore();
@@ -1591,7 +1665,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           const cx = pan.x + (port.tileX + 0.5) * zoom;
           const cy = pan.y + (port.tileY + 0.5) * zoom;
 
-          const pulse = animateFlow ? Math.sin(tSec * 4) * Math.min(3, zoom * 0.1) : 0;
+          const pulse = 0;
 
           // 1. Highlight frame on the entry/exit tile itself
           const isPortInTrace =
@@ -1785,77 +1859,68 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         const hx = pan.x + hoverTile.x * zoom;
         const hy = pan.y + hoverTile.y * zoom;
         if (tool === 'place-train-station') {
-          if (railStops.length > 0) {
-            // Fixed stops exist: highlight nearest stop when cursor approaches
-            const hoveredStop = railStops.find(
-              (s) => Math.hypot(hoverTile.x + 0.5 - s.stopCenter.x, hoverTile.y + 0.5 - s.stopCenter.y) <= 3.5
+          const hoveredStop =
+            railStops.length > 0
+              ? railStops.find(
+                  (s) =>
+                    Math.hypot(hoverTile.x + 0.5 - s.stopCenter.x, hoverTile.y + 0.5 - s.stopCenter.y) <=
+                    3.5
+                )
+              : undefined;
+          const nearbySnap =
+            !hoveredStop && railFlowNetwork.chains.length > 0
+              ? snapStationToRail(railFlowNetwork, hoverTile.x + 0.5, hoverTile.y + 0.5, 4)
+              : null;
+
+          if (hoveredStop) {
+            drawTrainAssembly(
+              {
+                tileX: hoveredStop.tileX,
+                tileY: hoveredStop.tileY,
+                direction: hoveredStop.direction,
+                wagonCount: trainStation?.wagonCount ?? 2,
+                slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
+                stackSizeOverrides: trainStation?.stackSizeOverrides,
+              },
+              true
             );
-            if (hoveredStop) {
-              drawTrainAssembly(
-                {
-                  tileX: hoveredStop.tileX,
-                  tileY: hoveredStop.tileY,
-                  direction: hoveredStop.direction,
-                  wagonCount: trainStation?.wagonCount ?? 2,
-                  slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
-                  stackSizeOverrides: trainStation?.stackSizeOverrides,
-                },
-                true
-              );
-            }
-          } else if (railFlowNetwork.chains.length > 0) {
-            // Snap ghost train-stop strictly onto nearest rail flow track
-            const snap = snapStationToRail(
-              railFlowNetwork,
-              hoverTile.x + 0.5,
-              hoverTile.y + 0.5,
-              10
+          } else if (nearbySnap) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(34, 211, 238, 0.25)';
+            ctx.strokeStyle = '#22D3EE';
+            ctx.lineWidth = 2;
+            ctx.fillRect(
+              pan.x + nearbySnap.tileX * zoom,
+              pan.y + nearbySnap.tileY * zoom,
+              2 * zoom,
+              2 * zoom
             );
-            if (snap) {
-              ctx.save();
-              ctx.fillStyle = 'rgba(34, 211, 238, 0.25)';
-              ctx.strokeStyle = '#22D3EE';
-              ctx.lineWidth = 2;
-              ctx.fillRect(
-                pan.x + snap.tileX * zoom,
-                pan.y + snap.tileY * zoom,
-                2 * zoom,
-                2 * zoom
-              );
-              ctx.strokeRect(
-                pan.x + snap.tileX * zoom,
-                pan.y + snap.tileY * zoom,
-                2 * zoom,
-                2 * zoom
-              );
-              ctx.restore();
-              drawTrainAssembly(
-                {
-                  tileX: snap.tileX,
-                  tileY: snap.tileY,
-                  direction: snap.direction,
-                  wagonCount: trainStation?.wagonCount ?? 2,
-                  slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
-                  stackSizeOverrides: trainStation?.stackSizeOverrides,
-                },
-                true
-              );
-            } else {
-              // Too far from rail: show snap-to-rail warning pill
-              ctx.save();
-              ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
-              const msg = t.canvas.trainModal.snapToRailHint;
-              const tw = ctx.measureText(msg).width + 16;
-              ctx.fillStyle = 'rgba(127, 29, 29, 0.92)';
-              ctx.fillRect(hx + 12, hy - 10, tw, 22);
-              ctx.strokeStyle = '#EF4444';
-              ctx.lineWidth = 1.2;
-              ctx.strokeRect(hx + 12, hy - 10, tw, 22);
-              ctx.fillStyle = '#FECACA';
-              ctx.fillText(msg, hx + 20, hy + 5);
-              ctx.restore();
-            }
+            ctx.strokeRect(
+              pan.x + nearbySnap.tileX * zoom,
+              pan.y + nearbySnap.tileY * zoom,
+              2 * zoom,
+              2 * zoom
+            );
+            ctx.restore();
+            drawTrainAssembly(
+              {
+                tileX: nearbySnap.tileX,
+                tileY: nearbySnap.tileY,
+                direction: nearbySnap.direction,
+                wagonCount: trainStation?.wagonCount ?? 2,
+                slotsPerWagon: trainStation?.slotsPerWagon ?? 40,
+                stackSizeOverrides: trainStation?.stackSizeOverrides,
+              },
+              true
+            );
           } else {
+            ctx.save();
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.2)';
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 1.8;
+            ctx.fillRect(hx, hy, 2 * zoom, 2 * zoom);
+            ctx.strokeRect(hx, hy, 2 * zoom, 2 * zoom);
+            ctx.restore();
             drawTrainAssembly(
               {
                 tileX: hoverTile.x,
@@ -1867,6 +1932,18 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               },
               true
             );
+          }
+        } else if (tool === 'draw-flow') {
+          if (hoverExactTile) {
+            const sx = pan.x + (Math.round(hoverExactTile.x * 2) / 2) * zoom;
+            const sy = pan.y + (Math.round(hoverExactTile.y * 2) / 2) * zoom;
+            ctx.save();
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(sx, sy, Math.max(4, zoom * 0.2), 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
           }
         } else if (tool.startsWith('place-')) {
           const isSplitter = tool === 'place-splitter';
@@ -1895,19 +1972,16 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       }
 
       ctx.restore();
-
-      if (animateFlow) {
-        rafId = requestAnimationFrame(renderFrame);
-      }
     };
 
-    rafId = requestAnimationFrame(renderFrame);
-    return () => cancelAnimationFrame(rafId);
+    renderFrame();
   }, [
-    animateFlow,
     canPlaceAt,
+    containerSizeTick,
+    draftFlowPoints,
     entities,
     factoryCenter,
+    hoverExactTile,
     hoverTile,
     machineProcessTrace,
     index.beaconsById,
@@ -1919,6 +1993,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     layout.gridFitReport,
     layout.ports,
     layout.zones,
+    layoutOptions?.manualFlowPaths,
     moveProdPreviewDelta,
     pan,
     placeDirection,
@@ -1933,7 +2008,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     t.canvas.portOut,
     t.canvas.trainModal.dedicatedBadge,
     t.canvas.trainModal.mixedBadge,
-    t.canvas.trainModal.snapToRailHint,
     t.canvas.trainModal.wagonPrefix,
     tool,
     trainPlan,
@@ -2018,6 +2092,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             ...(onChangeTrainStation
               ? [{ id: 'place-train-station', label: t.canvas.tools.trainEntrance, icon: TrainFront }]
               : []),
+            ...(onChangeLayoutOptions
+              ? [{ id: 'draw-flow', label: t.canvas.tools.drawFlow, icon: Route }]
+              : []),
             { id: 'place-belt', label: t.canvas.tools.belt },
             { id: 'place-underground', label: t.canvas.tools.underground },
             { id: 'place-splitter', label: t.canvas.tools.splitter },
@@ -2034,7 +2111,12 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setTool(item.id as EditorTool)}
+                onClick={() => {
+                  if (item.id !== 'draw-flow' && draftFlowPoints.length > 0) {
+                    setDraftFlowPoints([]);
+                  }
+                  setTool(item.id as EditorTool);
+                }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
                   active
                     ? 'bg-amber-500 text-slate-950 font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]'
@@ -2061,6 +2143,23 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
           {onChangeLayoutOptions && (
             <>
+              <button
+                type="button"
+                onClick={() =>
+                  onChangeLayoutOptions({
+                    layoutRotation: ((((layoutOptions?.layoutRotation ?? 0) + 4) % 16) as Direction),
+                  })
+                }
+                title={t.canvas.rotateFactoryTooltip}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded border whitespace-nowrap ${
+                  (layoutOptions?.layoutRotation ?? 0) !== 0
+                    ? 'bg-amber-500/15 border-amber-500/60 text-amber-300'
+                    : 'bg-[#1A2029] border-[#28313E] text-slate-200 hover:bg-[#232B37]'
+                }`}
+              >
+                <RotateCw className="w-3.5 h-3.5 text-amber-400" />
+                {t.canvas.rotateFactoryBtn} {((layoutOptions?.layoutRotation ?? 0) / 4) * 90}°
+              </button>
               <button
                 type="button"
                 onClick={() =>
@@ -2242,9 +2341,25 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
+          onDoubleClick={() => {
+            if (tool === 'draw-flow' && draftFlowPoints.length >= 2) {
+              handleFinishManualFlow();
+            }
+          }}
+          onContextMenu={(e) => {
+            if (tool === 'draw-flow') {
+              e.preventDefault();
+              if (draftFlowPoints.length >= 2) {
+                handleFinishManualFlow();
+              } else {
+                setDraftFlowPoints([]);
+              }
+            }
+          }}
           onMouseLeave={() => {
             handleMouseUp();
             setHoverTile(null);
+            setHoverExactTile(null);
           }}
           onWheel={handleWheel}
           className={`w-full h-full block ${
@@ -2409,16 +2524,65 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             </div>
           )}
 
-        {/* Zoom & Animation Controls */}
+        {/* Floating Manual Rail Flow Drawing HUD */}
+        {(tool === 'draw-flow' || (layoutOptions?.manualFlowPaths?.length ?? 0) > 0) &&
+          onChangeLayoutOptions && (
+            <div className="absolute bottom-3 left-3 flex flex-col gap-2 p-2.5 bg-[#141920]/95 border border-cyan-500/45 rounded-md shadow-xl text-xs max-w-xs">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-semibold text-cyan-300 flex items-center gap-1.5">
+                  <Route className="w-3.5 h-3.5" />
+                  {t.canvas.manualFlowTitle}
+                </span>
+                <span className="font-mono text-[11px] text-slate-400">
+                  {t.canvas.manualFlowCount(layoutOptions?.manualFlowPaths?.length ?? 0)}
+                </span>
+              </div>
+              {tool === 'draw-flow' && (
+                <div className="text-[11px] text-slate-400 leading-snug">
+                  {t.canvas.manualFlowHint}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {draftFlowPoints.length >= 2 && (
+                  <button
+                    type="button"
+                    onClick={() => handleFinishManualFlow()}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-amber-500 text-slate-950 rounded hover:bg-amber-400"
+                  >
+                    <Check className="w-3 h-3" />
+                    {t.canvas.manualFlowFinish}
+                  </button>
+                )}
+                {draftFlowPoints.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setDraftFlowPoints((prev) => prev.slice(0, -1))}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1D222B] border border-[#32363E] text-slate-200 rounded hover:border-amber-500/60"
+                  >
+                    <Undo2 className="w-3 h-3" />
+                    {t.canvas.manualFlowUndoPoint}
+                  </button>
+                )}
+                {(layoutOptions?.manualFlowPaths?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeLayoutOptions({
+                        manualFlowPaths: (layoutOptions?.manualFlowPaths ?? []).slice(0, -1),
+                      })
+                    }
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1D222B] border border-[#32363E] text-red-300 rounded hover:border-red-500/60"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    {t.canvas.manualFlowDeleteLast}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+        {/* Zoom Controls (Static Mode) */}
         <div className="absolute bottom-3 right-3 flex items-center gap-1 p-1 bg-[#141920] border border-[#262F3D] rounded-md">
-          <button
-            type="button"
-            title={animateFlow ? t.canvas.pauseAnim : t.canvas.playAnim}
-            onClick={() => setAnimateFlow((v) => !v)}
-            className="p-1.5 text-slate-300 hover:text-white hover:bg-[#1E2530] rounded"
-          >
-            {animateFlow ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-          </button>
           <button
             type="button"
             title={t.canvas.zoomOut}
@@ -2672,6 +2836,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           onClose={() => setTrainModalOpen(false)}
         />
       )}
+
     </div>
   );
 };

@@ -226,132 +226,100 @@ export const TrainPlannerModal: React.FC<TrainPlannerModalProps> = ({
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5">
-                {railStops.length > 0 ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!trainStation && railStops[0]) {
-                          onChangeTrainStation({
-                            ...effectiveStation,
-                            tileX: railStops[0].tileX,
-                            tileY: railStops[0].tileY,
-                            direction: railStops[0].direction,
-                            lockedStopEntityNumber: railStops[0].entityNumber,
-                          });
-                        }
-                        onPickOnCanvas();
-                        onClose();
-                      }}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-cyan-500/20 border border-cyan-500/60 text-cyan-200 rounded hover:bg-cyan-500/30"
-                    >
-                      <Crosshair className="w-3.5 h-3.5" />
-                      {t.canvas.trainModal.placeOnCanvas}
-                    </button>
-                    {railStops.map((stop, idx) => {
-                      const isActive =
-                        trainStation &&
-                        (trainStation.lockedStopEntityNumber === stop.entityNumber ||
-                          (trainStation.tileX === stop.tileX &&
-                            trainStation.tileY === stop.tileY));
-                      return (
-                        <button
-                          key={stop.entityNumber}
-                          type="button"
-                          onClick={() =>
-                            updateStation({
-                              tileX: stop.tileX,
-                              tileY: stop.tileY,
-                              direction: stop.direction,
-                              lockedStopEntityNumber: stop.entityNumber,
-                            })
-                          }
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-mono rounded border transition-colors ${
-                            isActive
-                              ? 'bg-amber-500/20 border-amber-500 text-amber-200 font-semibold'
-                              : 'bg-[#1D2028] border-[#32363E] text-slate-300 hover:border-cyan-500/60 hover:text-white'
-                          }`}
-                        >
-                          <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
-                          <span>
-                            #{idx + 1} ({stop.tileX}, {stop.tileY}) ·{' '}
-                            {t.canvas.directions[stop.direction]}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </>
-                ) : hasRailNetwork ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onPickOnCanvas();
-                      onClose();
-                    }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-cyan-500/20 border border-cyan-500/60 text-cyan-200 rounded hover:bg-cyan-500/30"
-                  >
-                    <Crosshair className="w-3.5 h-3.5" />
-                    {t.canvas.trainModal.addStopOnRail}
-                  </button>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!trainStation) {
-                          onChangeTrainStation(effectiveStation);
-                        }
-                        onPickOnCanvas();
-                        onClose();
-                      }}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-cyan-500/20 border border-cyan-500/60 text-cyan-200 rounded hover:bg-cyan-500/30"
-                    >
-                      <Crosshair className="w-3.5 h-3.5" />
-                      {t.canvas.trainModal.placeOnCanvas}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateStation({
-                          direction: (((effectiveStation.direction + 4) % 16) as Direction),
-                        })
-                      }
-                      className="inline-flex items-center gap-1 px-2 py-1.5 text-xs bg-[#1D2028] border border-[#32363E] text-slate-200 rounded hover:border-amber-500/60"
-                    >
-                      <RotateCw className="w-3.5 h-3.5 text-amber-400" />
-                      {t.canvas.trainModal.rotateStation}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => snapToBorder('south')}
-                      className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
-                    >
-                      {t.canvas.trainModal.snapSouth}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => snapToBorder('west')}
-                      className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
-                    >
-                      {t.canvas.trainModal.snapWest}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => snapToBorder('north')}
-                      className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
-                    >
-                      {t.canvas.trainModal.snapNorth}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => snapToBorder('east')}
-                      className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
-                    >
-                      {t.canvas.trainModal.snapEast}
-                    </button>
-                  </>
-                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!trainStation) {
+                      onChangeTrainStation(effectiveStation);
+                    }
+                    onPickOnCanvas();
+                    onClose();
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold bg-cyan-500/20 border border-cyan-500/60 text-cyan-200 rounded hover:bg-cyan-500/30"
+                >
+                  <Crosshair className="w-3.5 h-3.5" />
+                  {hasRailNetwork && railStops.length === 0
+                    ? t.canvas.trainModal.addStopOnRail
+                    : t.canvas.trainModal.placeOnCanvas}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateStation({
+                      lockedStopEntityNumber: undefined,
+                      direction: (((effectiveStation.direction + 4) % 16) as Direction),
+                    })
+                  }
+                  className="inline-flex items-center gap-1 px-2 py-1.5 text-xs bg-[#1D2028] border border-[#32363E] text-slate-200 rounded hover:border-amber-500/60"
+                >
+                  <RotateCw className="w-3.5 h-3.5 text-amber-400" />
+                  {t.canvas.trainModal.rotateStation}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => snapToBorder('south')}
+                  className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
+                >
+                  {t.canvas.trainModal.snapSouth}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => snapToBorder('west')}
+                  className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
+                >
+                  {t.canvas.trainModal.snapWest}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => snapToBorder('north')}
+                  className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
+                >
+                  {t.canvas.trainModal.snapNorth}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => snapToBorder('east')}
+                  className="px-2 py-1.5 text-[11px] bg-[#1D2028] border border-[#32363E] text-slate-300 rounded hover:text-white"
+                >
+                  {t.canvas.trainModal.snapEast}
+                </button>
               </div>
+              {railStops.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {railStops.map((stop, idx) => {
+                    const isActive =
+                      trainStation &&
+                      (trainStation.lockedStopEntityNumber === stop.entityNumber ||
+                        (trainStation.tileX === stop.tileX &&
+                          trainStation.tileY === stop.tileY));
+                    return (
+                      <button
+                        key={stop.entityNumber}
+                        type="button"
+                        onClick={() =>
+                          updateStation({
+                            tileX: stop.tileX,
+                            tileY: stop.tileY,
+                            direction: stop.direction,
+                            lockedStopEntityNumber: stop.entityNumber,
+                          })
+                        }
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono rounded border transition-colors ${
+                          isActive
+                            ? 'bg-amber-500/20 border-amber-500 text-amber-200 font-semibold'
+                            : 'bg-[#1D2028] border-[#32363E] text-slate-300 hover:border-cyan-500/60 hover:text-white'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                        <span>
+                          #{idx + 1} ({stop.tileX}, {stop.tileY}) ·{' '}
+                          {t.canvas.directions[stop.direction]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <p className="text-[11px] text-slate-400">
                 {railStops.length > 0 || hasRailNetwork
                   ? t.canvas.trainModal.railLockedHint

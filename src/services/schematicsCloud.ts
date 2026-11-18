@@ -19,11 +19,12 @@ import {
   where,
   type FieldValue,
 } from 'firebase/firestore';
+import type { Direction } from '../data/schema.ts';
 import { packRegistry } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit, StageOverride } from '../engine/types.ts';
 import { db, handleFirestoreError, OperationType } from '../firebase.ts';
 import { encodeBlueprintString, parseBlueprintToEntities } from '../spatial/blueprintCodec.ts';
-import type { TrainStationConfig } from '../spatial/types.ts';
+import type { ManualFlowPath, TrainStationConfig } from '../spatial/types.ts';
 import type { FactoryProject } from '../state/projectsStore.ts';
 
 const VALID_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -106,6 +107,8 @@ interface CompactSchematicPayload {
     inputSide?: 'distributed' | 'south' | 'west';
     productionOffsetX?: number;
     productionOffsetY?: number;
+    layoutRotation?: Direction;
+    manualFlowPaths?: ManualFlowPath[];
   };
   trainStation?: TrainStationConfig;
   blueprintString?: string;

@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { Direction } from '../data/schema.ts';
 import { DEFAULT_PACK_ID } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit } from '../engine/types.ts';
-import type { GridEntity, InputAlignmentSide, TrainStationConfig } from '../spatial/types.ts';
+import type { GridEntity, InputAlignmentSide, ManualFlowPath, TrainStationConfig } from '../spatial/types.ts';
 
 export interface FactoryProject {
   id: string;
@@ -21,6 +22,8 @@ export interface FactoryProject {
     inputSide?: InputAlignmentSide;
     productionOffsetX?: number;
     productionOffsetY?: number;
+    layoutRotation?: Direction;
+    manualFlowPaths?: ManualFlowPath[];
   };
   /** Optional Train Entrance & Cargo Wagon slot configuration */
   trainStation?: TrainStationConfig;
@@ -124,6 +127,33 @@ export const PROJECT_TEMPLATES: Array<Omit<FactoryProject, 'id' | 'createdAt' | 
           },
         },
       },
+    },
+  },
+  {
+    name: 'Krastorio 2 Spaced Out · Military Tech Card (60/min)',
+    description: 'Cartão Tecnológico Militar K2 com Componentes Eletrônicos, Silício, Cartão em Branco e Dados de Mordedores.',
+    rateUnit: 'per_minute',
+    compactionMode: 'compact',
+    config: {
+      packId: 'factorio-space-age-krastorio2',
+      targets: [{ itemId: 'military-science-pack', ratePerSec: 1 }],
+      defaultBeltId: 'express-transport-belt',
+      defaultInserterId: 'fast-inserter',
+    },
+  },
+  {
+    name: 'Krastorio 2 Spaced Out · Automation + Logistic Cards (60/min)',
+    description: 'Linha inicial Krastorio 2 com Automation Core, Cartão em Branco, Estufa (Madeira) e Circuitos K2.',
+    rateUnit: 'per_minute',
+    compactionMode: 'compact',
+    config: {
+      packId: 'factorio-space-age-krastorio2',
+      targets: [
+        { itemId: 'automation-science-pack', ratePerSec: 1 },
+        { itemId: 'logistic-science-pack', ratePerSec: 1 },
+      ],
+      defaultBeltId: 'fast-transport-belt',
+      defaultInserterId: 'fast-inserter',
     },
   },
   {
@@ -232,7 +262,7 @@ export function createBlankProject(
     config: {
       packId,
       targets: [],
-      defaultBeltId: 'fast-transport-belt',
+      defaultBeltId: 'transport-belt',
       defaultInserterId: 'fast-inserter',
     },
     createdAt: now,

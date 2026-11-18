@@ -83,6 +83,29 @@ export function getRailCurveSpec(name: string, rawDir: number): RailCurveSpec {
     }
   }
 
+  if (name.includes('curved-rail')) {
+    const evenDir = d & ~1;
+    switch (evenDir) {
+      case 0: // S (+Y) -> NW (-X, -Y)
+        return { kind: 'quad', p0: { x: 2, y: 3 }, p1: { x: 2, y: -1 }, p2: { x: -1, y: -4 }, tieCount: 7 };
+      case 2: // S (+Y) -> NE (+X, -Y)
+        return { kind: 'quad', p0: { x: -2, y: 3 }, p1: { x: -2, y: -1 }, p2: { x: 1, y: -4 }, tieCount: 7 };
+      case 4: // W (-X) -> NE (+X, -Y)
+        return { kind: 'quad', p0: { x: -3, y: 2 }, p1: { x: 1, y: 2 }, p2: { x: 4, y: -1 }, tieCount: 7 };
+      case 6: // W (-X) -> SE (+X, +Y)
+        return { kind: 'quad', p0: { x: -3, y: -2 }, p1: { x: 1, y: -2 }, p2: { x: 4, y: 1 }, tieCount: 7 };
+      case 8: // N (-Y) -> SE (+X, +Y)
+        return { kind: 'quad', p0: { x: -2, y: -3 }, p1: { x: -2, y: 1 }, p2: { x: 1, y: 4 }, tieCount: 7 };
+      case 10: // N (-Y) -> SW (-X, +Y)
+        return { kind: 'quad', p0: { x: 2, y: -3 }, p1: { x: 2, y: 1 }, p2: { x: -1, y: 4 }, tieCount: 7 };
+      case 12: // E (+X) -> SW (-X, +Y)
+        return { kind: 'quad', p0: { x: 3, y: -2 }, p1: { x: -1, y: -2 }, p2: { x: -4, y: 1 }, tieCount: 7 };
+      case 14: // E (+X) -> NW (-X, -Y)
+      default:
+        return { kind: 'quad', p0: { x: 3, y: 2 }, p1: { x: -1, y: 2 }, p2: { x: -4, y: -1 }, tieCount: 7 };
+    }
+  }
+
   if (name.includes('half-diagonal')) {
     const axis = (d % 2 === 1 ? d : (d + 1) % 16) % 8;
     switch (axis) {
@@ -99,17 +122,29 @@ export function getRailCurveSpec(name: string, rawDir: number): RailCurveSpec {
   }
 
   // straight-rail / elevated-straight-rail (2x2)
-  const evenDir = (d & ~1) % 8;
-  switch (evenDir) {
+  // Factorio's diagonal direction points toward the empty interior normal,
+  // OPPOSITE the occupied corner of the 2x2 tile:
+  //   NE dir (2 / 1.1=1):  occupies SW corner -> (0,1) to (-1,0) ("\" slope)
+  //   SE dir (6 / 1.1=3):  occupies NW corner -> (-1,0) to (0,-1) ("/" slope)
+  //   SW dir (10 / 1.1=5): occupies NE corner -> (0,-1) to (1,0) ("\" slope)
+  //   NW dir (14 / 1.1=7): occupies SE corner -> (1,0) to (0,1) ("/" slope)
+  const dir16 = (d & ~1) % 16;
+  switch (dir16) {
     case 0:
+    case 8:
       return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 0, y: 1 }, tieCount: 3 };
-    case 2:
-      return { kind: 'line', p0: { x: -1, y: 1 }, p1: { x: 1, y: -1 }, tieCount: 3 };
     case 4:
+    case 12:
       return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 1, y: 0 }, tieCount: 3 };
-    case 6:
+    case 2: // NE (1.1 dir 1): SW corner (0,1) -> (-1,0) ("\" slope)
+      return { kind: 'line', p0: { x: 0, y: 1 }, p1: { x: -1, y: 0 }, tieCount: 2 };
+    case 6: // SE (1.1 dir 3): NW corner (-1,0) -> (0,-1) ("/" slope)
+      return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 0, y: -1 }, tieCount: 2 };
+    case 10: // SW (1.1 dir 5): NE corner (0,-1) -> (1,0) ("\" slope)
+      return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 1, y: 0 }, tieCount: 2 };
+    case 14: // NW (1.1 dir 7): SE corner (1,0) -> (0,1) ("/" slope)
     default:
-      return { kind: 'line', p0: { x: -1, y: -1 }, p1: { x: 1, y: 1 }, tieCount: 3 };
+      return { kind: 'line', p0: { x: 1, y: 0 }, p1: { x: 0, y: 1 }, tieCount: 2 };
   }
 }
 

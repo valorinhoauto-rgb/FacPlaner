@@ -233,10 +233,24 @@ describe('Fase 2 — Factorio Game Database & Validation', () => {
     const k2Index = packRegistry.getIndex('factorio-space-age-krastorio2');
     const k2Validation = validateGameDataPack(k2Index.pack);
     expect(k2Validation.errors).toEqual([]);
+    expect(k2Validation.warnings).toEqual([]);
     expect(k2Validation.valid).toBe(true);
     expect(k2Index.machinesById.get('kr-crusher')?.tileSize).toEqual({ width: 7, height: 7 });
+    expect(k2Index.machinesById.get('kr-greenhouse')?.tileSize).toEqual({ width: 7, height: 7 });
+    expect(k2Index.machinesById.get('kr-research-server')?.tileSize).toEqual({ width: 3, height: 3 });
+    expect(k2Index.machinesById.get('kr-quantum-computer')?.tileSize).toEqual({ width: 6, height: 6 });
     expect(k2Index.beltsById.get('kr-superior-transport-belt')?.throughputPerSec).toBe(90);
     expect(k2Index.beaconsById.get('kr-singularity-beacon')?.distributionEffectivity).toBe(1.5);
+
+    // K2 mod recipes must strictly override Vanilla/Space Age recipes for the same ID
+    const milTech = k2Index.recipesById.get('military-science-pack')!;
+    expect(milTech.energyRequired).toBe(20);
+    expect(milTech.results[0].amount).toBe(5);
+    expect(milTech.ingredients.map((i) => [i.id, i.amount])).toEqual([
+      ['kr-electronic-components', 5],
+      ['kr-blank-tech-card', 5],
+      ['kr-biters-research-data', 1],
+    ]);
   });
 
   it('Fase 5 — extracts iconPath, electric poles, localised_name arrays, and recipe productivity tech from Factorio 2.0 dumps', () => {

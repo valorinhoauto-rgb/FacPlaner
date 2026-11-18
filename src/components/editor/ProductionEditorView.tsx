@@ -102,9 +102,9 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
   const primaryRes = primaryTarget ? index.resourcesById.get(primaryTarget.itemId) : undefined;
   const displayUnitMult = RATE_UNIT_MULTIPLIER[project.rateUnit];
   const activeBelt =
-    index.beltsById.get(project.config.defaultBeltId ?? 'express-transport-belt') ??
-    index.pack.belts[index.pack.belts.length - 1];
-  const beltSpeedPerSec = activeBelt?.throughputPerSec ?? 45;
+    index.beltsById.get(project.config.defaultBeltId ?? 'transport-belt') ??
+    index.pack.belts[0];
+  const beltSpeedPerSec = activeBelt?.throughputPerSec ?? 15;
 
   return (
     <div className="flex flex-col h-[calc(100vh-57px)] overflow-hidden">
@@ -290,7 +290,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
 
           {/* Belt Tier */}
           <select
-            value={project.config.defaultBeltId ?? 'express-transport-belt'}
+            value={project.config.defaultBeltId ?? index.pack.belts[0]?.id ?? 'transport-belt'}
             onChange={(e) =>
               updateConfig((prev) => ({ ...prev, defaultBeltId: e.target.value }))
             }
@@ -323,7 +323,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                     targets: validTargets,
                     defaultBeltId: beltValid
                       ? prev.defaultBeltId
-                      : nextIndex.pack.belts[nextIndex.pack.belts.length - 1]?.id,
+                      : nextIndex.pack.belts[0]?.id,
                     defaultInserterId: insValid
                       ? prev.defaultInserterId
                       : nextIndex.pack.inserters[0]?.id,
@@ -573,7 +573,7 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
                 layout={autoLayout}
                 entities={activeEntities}
                 projectName={project.name}
-                defaultBeltId={project.config.defaultBeltId ?? 'express-transport-belt'}
+                defaultBeltId={project.config.defaultBeltId ?? 'transport-belt'}
                 compactionMode={project.compactionMode}
                 layoutOptions={project.layoutOptions}
                 hasGridFrame={Boolean(project.gridFrame && project.gridFrame.length > 0)}
@@ -746,6 +746,9 @@ export const ProductionEditorView: React.FC<ProductionEditorViewProps> = ({
           solveResult={solveResult}
           rateUnit={project.rateUnit}
           inputSide={project.layoutOptions?.inputSide ?? 'distributed'}
+          gridFitReport={autoLayout.gridFitReport}
+          layoutBounds={autoLayout.bounds}
+          compactionMode={project.compactionMode}
           onUpdateConfig={updateConfig}
           onChangeInputSide={(side: InputAlignmentSide) =>
             onUpdateProject((prev) => ({

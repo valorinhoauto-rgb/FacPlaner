@@ -218,6 +218,27 @@ describe('Fase 3 — Factorio Production Calculation Engine', () => {
     expect(result.rawInputs.some((r) => r.itemId === 'kr-rare-metal-ore')).toBe(true);
   });
 
+  it('solves Krastorio 2 Spaced Out Military Tech Card using K2 overrides (Coke, Biomass, Silicon, Glass, Blank Card)', () => {
+    const k2Index = packRegistry.getIndex('factorio-space-age-krastorio2');
+    const result = solveProductionPlan(k2Index, {
+      packId: 'factorio-space-age-krastorio2',
+      targets: [{ itemId: 'military-science-pack', ratePerSec: 1 }],
+      defaultBeltId: 'express-transport-belt',
+    });
+
+    expect(result.targetsSummary[0].actualPerSec).toBeCloseTo(1, 4);
+    expect(result.stages.some((s) => s.recipeId === 'kr-electronic-components')).toBe(true);
+    expect(result.stages.some((s) => s.recipeId === 'kr-blank-tech-card')).toBe(true);
+    expect(result.stages.some((s) => s.recipeId === 'kr-biters-research-data')).toBe(true);
+    expect(result.stages.some((s) => s.recipeId === 'kr-coke')).toBe(true);
+    expect(result.stages.some((s) => s.recipeId === 'steel-plate')).toBe(true);
+    // Must NOT pull in Vanilla Military Science ingredients (grenade / stone-wall / piercing rounds)
+    expect(result.stages.some((s) => s.recipeId === 'grenade')).toBe(false);
+    expect(result.stages.some((s) => s.recipeId === 'stone-wall')).toBe(false);
+    expect(result.rawInputs.some((r) => r.itemId === 'kr-biomass')).toBe(true);
+    expect(result.rawInputs.some((r) => r.itemId === 'coal')).toBe(true);
+  });
+
   it('builds interactive dependency chains and collapses upstream steps when primary resources are set external', async () => {
     const { buildTargetChainTree, computeChainPresetOverrides } = await import(
       '../chainInspector.ts'

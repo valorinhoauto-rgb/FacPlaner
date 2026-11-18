@@ -51,10 +51,21 @@ export interface GridEntity {
   inserterReach?: 1 | 2;
   /** Item IDs transferred by inserter */
   inserterItems?: string[];
+  /** True when inserter uses an explicit item filter (e.g. mixed cargo wagon unloading) */
+  isFiltered?: boolean;
+  /** Dedicated item ID buffered in a station chest */
+  chestFilterItem?: string;
   /** Optional custom color override */
   accentColor?: string;
   /** Marks entities that belong to an imported Base Grid Frame (locked structural obstacles/rails/poles) */
   isGridFrame?: boolean;
+  /** Exact original decoded Factorio blueprint entity (minus global normalization shift) preserved for lossless round-trip */
+  preservedRawEntity?: Record<string, unknown>;
+}
+
+export interface ManualFlowPath {
+  id: string;
+  points: Array<{ x: number; y: number }>;
 }
 
 export interface StageZone {
@@ -127,6 +138,10 @@ export interface LayoutSynthesisOptions {
   /** Manual tile offset relative to centered alignment */
   productionOffsetX?: number;
   productionOffsetY?: number;
+  /** Rigid rotation (0/4/8/12) applied to synthesized production blueprint */
+  layoutRotation?: Direction;
+  /** User-drawn directional rail flow paths overlaid on the imported grid */
+  manualFlowPaths?: ManualFlowPath[];
   /** Optional external grid blueprint entities (rails, roboports, substations, walls, etc.) to fit production inside */
   gridFrame?: GridEntity[];
   /** Optional Train Station / Cargo Wagon config to route unloading belts directly up to the wagon fronts */

@@ -764,21 +764,23 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     const inputPorts = layout.ports.filter((p) => p.directionType === 'input');
     expect(inputPorts.length).toBe(2);
 
-    // Every input port sits right at a cargo wagon front along the rail, with an unloading inserter adjacent to it
+    // Cargo wagons unload via dual-inserter + steel-chest buffer manifolds near each wagon, exiting to balanced inputPorts
     const carPoses = computeTrainCarPosesOnNetwork(net, stationConfig, { x: 24, y: -24 });
     const wagonPoses = carPoses.slice(1);
+    const unloadingChests = layout.entities.filter((e) => e.name === 'steel-chest');
+    expect(unloadingChests.length).toBeGreaterThanOrEqual(4);
     const unloadingInserters = layout.entities.filter(
       (e) =>
         e.kind === 'inserter' &&
-        inputPorts.some((p) => Math.abs(e.tileX - p.tileX) + Math.abs(e.tileY - p.tileY) === 1)
+        wagonPoses.some((w) => Math.hypot(e.tileX + 0.5 - w.centerX, e.tileY + 0.5 - w.centerY) <= 5.0)
     );
-    expect(unloadingInserters.length).toBe(2);
+    expect(unloadingInserters.length).toBeGreaterThanOrEqual(4);
 
     for (const port of inputPorts) {
       const minWagonDist = Math.min(
         ...wagonPoses.map((w) => Math.hypot(port.tileX + 0.5 - w.centerX, port.tileY + 0.5 - w.centerY))
       );
-      expect(minWagonDist).toBeLessThanOrEqual(8.5);
+      expect(minWagonDist).toBeLessThanOrEqual(12.5);
     }
 
     // Zero tile collisions across frame, rails, unloading inserters, routed belts, and machines
@@ -912,13 +914,17 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     // Must place splitters to branch shared raw items (iron-plate / copper-plate) across consumers
     expect(layout.stats.splitterCount).toBeGreaterThanOrEqual(2);
 
-    // Every input port tile must have an unloading inserter adjacent and zero tile collisions across layout
-    const unloadingInserters = layout.entities.filter(
-      (e) =>
-        e.kind === 'inserter' &&
-        inputPorts.some((p) => Math.abs(e.tileX - p.tileX) + Math.abs(e.tileY - p.tileY) === 1)
-    );
-    expect(unloadingInserters.length).toBe(5);
+    // Every raw input item must have unloading inserters + steel-chest buffer crates and zero tile collisions across layout
+    const unloadingChests = layout.entities.filter((e) => e.name === 'steel-chest');
+    expect(unloadingChests.length).toBeGreaterThanOrEqual(10);
+    for (const reqItem of ['iron-plate', 'copper-plate', 'steel-plate', 'plastic-bar', 'sulfur']) {
+      const hasChest = unloadingChests.some((c) => c.chestFilterItem === reqItem);
+      const hasInserter = layout.entities.some(
+        (e) => e.kind === 'inserter' && e.inserterItems?.includes(reqItem)
+      );
+      expect(hasChest).toBe(true);
+      expect(hasInserter).toBe(true);
+    }
 
     const occupied = new Set<string>();
     for (const e of layout.entities) {
@@ -1064,7 +1070,503 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     expect(trace.entityNumbers.has(engineMachine.entityNumber)).toBe(false);
     expect(trace.portKeys.has(`${sulfurPort.tileX},${sulfurPort.tileY}`)).toBe(false);
   });
-});
 
+  it('connects Factorio 2.0 45-degree diagonal straight-rails, curved-rail-b corners, and 4-lane trunk X-crossovers seamlessly', async () => {
+    const { buildRailFlowNetwork } = await import('../railFlowNetwork.ts');
+
+    // Construct a Factorio 2.0 SW<->NE diagonal track transitioning cleanly via curved-rail-b
+    // + curved-rail-a into Westbound cardinal straight-rails, plus an X-crossover (curved-rail-a + half-diagonal + curved-rail-a)
+    // and open boundary stubs that must stay aligned in their Factorio orientation.
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Diagonal + Trunk Crossover Test',
+        version: 562949958139904,
+        entities: [
+          // Top horizontal West-East trunk line at y=0 (x = -12..-2, +4..+12)
+          { entity_number: 1, name: 'straight-rail', position: { x: -12, y: 0 }, direction: 4 },
+          { entity_number: 2, name: 'straight-rail', position: { x: -10, y: 0 }, direction: 4 },
+          { entity_number: 3, name: 'straight-rail', position: { x: -8, y: 0 }, direction: 4 },
+          { entity_number: 4, name: 'curved-rail-a', position: { x: -5, y: 0 }, direction: 14 }, // p0=(-7,0) to (-2,1)
+          { entity_number: 5, name: 'half-diagonal-rail', position: { x: 0, y: 2 }, direction: 5 }, // (-2,1) to (2,3)
+          { entity_number: 6, name: 'curved-rail-a', position: { x: 5, y: 4 }, direction: 6 }, // (2,3) to (7,4)
+          { entity_number: 7, name: 'straight-rail', position: { x: 8, y: 4 }, direction: 4 },
+          { entity_number: 8, name: 'straight-rail', position: { x: 10, y: 4 }, direction: 4 },
+
+          // Parallel 45-degree "/" diagonal corridor -> Westbound cardinal turn
+          // Diagonal staircase in real Factorio 2.0 coords: NW corner (dir 14: (1,0)->(0,1)) + SE corner (dir 6: (-1,0)->(0,-1))
+          // (-10,12) dir 14 -> (-8,12) dir 6 -> (-8,10) dir 14 -> (-6,10) dir 6 (ends at (-6, 9))
+          { entity_number: 9, name: 'straight-rail', position: { x: -10, y: 12 }, direction: 14 },
+          { entity_number: 10, name: 'straight-rail', position: { x: -8, y: 12 }, direction: 6 },
+          { entity_number: 11, name: 'straight-rail', position: { x: -8, y: 10 }, direction: 14 },
+          { entity_number: 12, name: 'straight-rail', position: { x: -6, y: 10 }, direction: 6 }, // ends at (-6, 9)
+          // Attach curved-rail-b (dir 3: p0=(2,-1), p2=(-2,2)): center (-4, 7) -> p2=(-6,9), p0=(-2,6)
+          { entity_number: 13, name: 'curved-rail-b', position: { x: -4, y: 7 }, direction: 3 },
+          { entity_number: 14, name: 'curved-rail-a', position: { x: 1, y: 5 }, direction: 12 },
+          { entity_number: 15, name: 'straight-rail', position: { x: 4, y: 5 }, direction: 4 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Must form exactly 2 unbroken chains (crossover chain + diagonal-to-cardinal chain) with ZERO fragmented micro-stubs
+    expect(net.chains.length).toBe(2);
+    for (const ch of net.chains) {
+      expect(ch.totalLength).toBeGreaterThan(10);
+    }
+    expect(net.vertices.filter((v) => v.connections.length === 1).length).toBe(4);
+  });
+
+  it('welds Factorio 1.1 curved-rail 8-way roundabouts, 6-tile S-bend switches, and 45-degree diagonal straight-rails seamlessly', async () => {
+    const { buildRailFlowNetwork } = await import('../railFlowNetwork.ts');
+
+    // Factorio 1.1 version (< 2 << 48) using 8-way directions (0..7) and legacy 'curved-rail'
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Factorio 1.1 Roundabout + 6-tile S-Bend',
+        version: 281479278886912,
+        entities: [
+          // 1) Symmetric R=12 Factorio 1.1 roundabout centered at (0, 0) using real Factorio 1.1 diagonal corners
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 12 }, direction: 2 },
+          { entity_number: 2, name: 'curved-rail', position: { x: 4, y: 10 }, direction: 2 }, // W->NE -> (8,9)
+          { entity_number: 3, name: 'straight-rail', position: { x: 8, y: 8 }, direction: 7 }, // SE corner (8,9)->(9,8)
+          { entity_number: 4, name: 'curved-rail', position: { x: 10, y: 4 }, direction: 5 }, // SW->N -> (12,1)
+          { entity_number: 5, name: 'straight-rail', position: { x: 12, y: 0 }, direction: 0 },
+          { entity_number: 6, name: 'curved-rail', position: { x: 10, y: -4 }, direction: 0 }, // S->NW -> (9,-8)
+          { entity_number: 7, name: 'straight-rail', position: { x: 8, y: -8 }, direction: 5 }, // NE corner (9,-8)->(8,-9)
+          { entity_number: 8, name: 'curved-rail', position: { x: 4, y: -10 }, direction: 3 }, // W->SE (1,-12)->(8,-9)
+          { entity_number: 9, name: 'straight-rail', position: { x: 0, y: -12 }, direction: 2 },
+          { entity_number: 10, name: 'curved-rail', position: { x: -4, y: -10 }, direction: 6 }, // E->SW (-1,-12)->(-8,-9)
+          { entity_number: 11, name: 'straight-rail', position: { x: -8, y: -8 }, direction: 3 }, // NW corner (-9,-8)->(-8,-9)
+          { entity_number: 12, name: 'curved-rail', position: { x: -10, y: -4 }, direction: 1 }, // S->NE (-12,-1)->(-9,-8)
+          { entity_number: 13, name: 'straight-rail', position: { x: -12, y: 0 }, direction: 0 },
+          { entity_number: 14, name: 'curved-rail', position: { x: -10, y: 4 }, direction: 4 }, // N->SE (-12,1)->(-9,8)
+          { entity_number: 15, name: 'straight-rail', position: { x: -8, y: 8 }, direction: 1 }, // SW corner (-9,8)->(-8,9)
+          { entity_number: 16, name: 'curved-rail', position: { x: -4, y: 10 }, direction: 7 }, // E->NW (-1,12)->(-8,9)
+
+          // 2) Separate Factorio 1.1 6-tile S-bend crossover (y=30 -> y=36)
+          { entity_number: 17, name: 'straight-rail', position: { x: 0, y: 30 }, direction: 2 },
+          { entity_number: 18, name: 'curved-rail', position: { x: 4, y: 32 }, direction: 3 }, // (1,30)->(8,33)
+          { entity_number: 19, name: 'curved-rail', position: { x: 12, y: 34 }, direction: 7 }, // (8,33)->(15,36)
+          { entity_number: 20, name: 'straight-rail', position: { x: 16, y: 36 }, direction: 2 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Must weld cleanly into 2 continuous chains: 1 closed roundabout ring + 1 unbroken S-bend
+    expect(net.chains.length).toBe(2);
+    expect(net.chains.some((c) => c.closed)).toBe(true);
+    expect(net.vertices.filter((v) => v.connections.length === 1).length).toBe(2);
+  });
+
+  it('scales high-throughput smelting (18.2+ belts) to parallel <= 1.0 belt ports without butt-joints or orphan splitters', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'iron-plate', ratePerSec: 546 }], // 18.2 red belts (30/s)
+      rawResourceOverrides: ['iron-ore'],
+      defaultBeltId: 'fast-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+
+    for (const inputSide of ['distributed', 'west'] as const) {
+      const layout = synthesizeFactoryLayout(index, solveResult, config, {
+        compactionMode: 'compact',
+        inputSide,
+      });
+
+      const inputPorts = layout.ports.filter((p) => p.directionType === 'input');
+      const outputPorts = layout.ports.filter((p) => p.directionType === 'output');
+
+      // 18.2 red belts -> >= 19 parallel input & output ports, each <= 1.0 belt capacity
+      expect(inputPorts.length).toBeGreaterThanOrEqual(19);
+      expect(outputPorts.length).toBeGreaterThanOrEqual(19);
+      for (const p of [...inputPorts, ...outputPorts]) {
+        expect(p.beltsRequired).toBeLessThanOrEqual(1.0 + 1e-4);
+      }
+
+      // Zero tile collisions across all placed entities
+      const occupied = new Set<string>();
+      const byCoord = new Map<string, (typeof layout.entities)[number]>();
+      for (const e of layout.entities) {
+        for (let dx = 0; dx < e.width; dx++) {
+          for (let dy = 0; dy < e.height; dy++) {
+            const key = `${e.tileX + dx},${e.tileY + dy}`;
+            expect(occupied.has(key)).toBe(false);
+            occupied.add(key);
+            byCoord.set(key, e);
+          }
+        }
+      }
+
+      // Every splitter must connect cleanly along its travel axis (never orphaned sideways)
+      const splitters = layout.entities.filter((e) => e.kind === 'splitter');
+      for (const sp of splitters) {
+        const horiz = sp.direction === 0 || sp.direction === 8;
+        if (horiz) {
+          const dyOut = sp.direction === 0 ? -1 : 1;
+          const front = byCoord.get(`${sp.tileX},${sp.tileY + dyOut}`) || byCoord.get(`${sp.tileX + 1},${sp.tileY + dyOut}`);
+          const back = byCoord.get(`${sp.tileX},${sp.tileY - dyOut}`) || byCoord.get(`${sp.tileX + 1},${sp.tileY - dyOut}`);
+          expect(Boolean(front)).toBe(true);
+          expect(Boolean(back)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('trims dangling column output/input belt tiles at outermost inserters and separates adjacent column lanes by >= 1 air tile', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'iron-plate', ratePerSec: 60 }], // 2 columns of electric furnaces
+      rawResourceOverrides: ['iron-ore'],
+      defaultBeltId: 'fast-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const layout = synthesizeFactoryLayout(index, solveResult, config, 'compact');
+
+    const machines = layout.entities.filter((e) => e.kind === 'machine');
+    const colXs = Array.from(new Set(machines.map((m) => m.tileX))).sort((a, b) => a - b);
+    expect(colXs.length).toBeGreaterThanOrEqual(2);
+
+    const byCoord = new Map<string, (typeof layout.entities)[number]>();
+    for (const e of layout.entities) {
+      byCoord.set(`${e.tileX},${e.tileY}`, e);
+    }
+
+    // 1. Check bottom-most machine in each column: output belt starts right at midY (ZERO dangling tile at mY+2 below it)
+    //    and top-most machine in each column: input belt stops right at midY (ZERO dangling tile at mY above it)
+    for (const mX of colXs) {
+      const colMachines = machines.filter((m) => m.tileX === mX);
+      const bottomMachine = colMachines.reduce((a, b) => (a.tileY > b.tileY ? a : b));
+      const topMachine = colMachines.reduce((a, b) => (a.tileY < b.tileY ? a : b));
+      const bottomMidY = bottomMachine.tileY + Math.floor(bottomMachine.height / 2);
+      const topMidY = topMachine.tileY + Math.floor(topMachine.height / 2);
+
+      const outX = mX + bottomMachine.width + 1;
+      const inX = mX - 2;
+
+      expect(byCoord.get(`${outX},${bottomMidY}`)?.kind).toBe('transport-belt');
+      expect(byCoord.get(`${outX},${bottomMidY + 1}`)).toBeUndefined();
+
+      expect(byCoord.get(`${inX},${topMidY}`)?.kind).toBe('transport-belt');
+      expect(byCoord.get(`${inX},${topMidY - 1}`)).toBeUndefined();
+    }
+
+    // 2. Adjacent columns' output belt and next column's input belt have at least 1 empty air tile between them
+    for (let i = 0; i < colXs.length - 1; i++) {
+      const colLeft = colXs[i];
+      const colRight = colXs[i + 1];
+      const mW = machines.find((m) => m.tileX === colLeft)!.width;
+      const outX = colLeft + mW + 1;
+      const nextInX = colRight - 2;
+      expect(nextInX - outX).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('preserves co-located overlapping Factorio 1.1 curves and 45-degree diagonals without collapsing or rotating them', async () => {
+    const { buildRailFlowNetwork } = await import('../railFlowNetwork.ts');
+
+    // Co-located overlapping Factorio 1.1 curved-rails sharing center (4, 10) + diagonal straight-rail SE (3)
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Co-located 1.1 Curves + Diagonal',
+        version: 281479278886912,
+        entities: [
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 12 }, direction: 2 },
+          // Curve A: W->NE (dir 2) from (1,12) to (8,9)
+          { entity_number: 2, name: 'curved-rail', position: { x: 4, y: 10 }, direction: 2 },
+          // Curve B at the SAME center (4,10): E->NW (dir 7) from (7,12) to (0,9)
+          { entity_number: 3, name: 'curved-rail', position: { x: 4, y: 10 }, direction: 7 },
+          // Straight-rail SE diagonal (1.1 dir 7) connecting seamlessly to Curve A at (8,9) -> (9,8)
+          { entity_number: 4, name: 'straight-rail', position: { x: 8, y: 8 }, direction: 7 },
+          { entity_number: 5, name: 'straight-rail', position: { x: 8, y: 12 }, direction: 2 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Both overlapping curves must survive as distinct chains without deleting either one!
+    expect(net.chains.length).toBe(2);
+    // Curve A welds seamlessly with straight-rail (0,12) AND diagonal straight-rail (8,8) -> total length > 10
+    const maxLen = Math.max(...net.chains.map((c) => c.totalLength));
+    expect(maxLen).toBeGreaterThan(10);
+  });
+
+  it('caps train unloading at <= 4 belts per wagon, places steel-chest buffer manifolds, input balancers, and output balancers', async () => {
+    const { parseBlueprintToEntities, encodeBlueprintString } = await import('../blueprintCodec.ts');
+
+    // 4 red belts (120/s) of iron plate unloaded from 1 cargo wagon + balanced into output
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'iron-plate', ratePerSec: 120 }], // 4 full red belts
+      rawResourceOverrides: ['iron-ore'],
+      defaultBeltId: 'fast-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      trainStation: {
+        tileX: 0,
+        tileY: 36,
+        direction: 4, // Eastbound station
+        wagonCount: 1,
+        slotsPerWagon: 40,
+      },
+    });
+
+    // 1. Train unloading places 6 steel-chest buffer crates per wagon
+    const chests = layout.entities.filter((e) => e.name === 'steel-chest');
+    expect(chests.length).toBe(6);
+
+    // 2. Output has >= 4 output ports cleanly balanced through splitters
+    const outPorts = layout.ports.filter((p) => p.directionType === 'output');
+    expect(outPorts.length).toBeGreaterThanOrEqual(4);
+
+    // 3. Input + output 4x4 balancers place multiple splitters and zero entity collisions
+    const splitters = layout.entities.filter((e) => e.kind === 'splitter');
+    expect(splitters.length).toBeGreaterThanOrEqual(8);
+
+    const occupied = new Set<string>();
+    for (const e of layout.entities) {
+      for (let dx = 0; dx < e.width; dx++) {
+        for (let dy = 0; dy < e.height; dy++) {
+          const k = `${e.tileX + dx},${e.tileY + dy}`;
+          expect(occupied.has(k)).toBe(false);
+          occupied.add(k);
+        }
+      }
+    }
+
+    // 4. Filtered inserter serialization round-trip works cleanly
+    const bpWithFilter = encodeBlueprintString(
+      [
+        {
+          entityNumber: 1,
+          kind: 'inserter',
+          name: 'fast-inserter',
+          tileX: 0,
+          tileY: 0,
+          width: 1,
+          height: 1,
+          direction: 0,
+          inserterItems: ['iron-ore'],
+          isFiltered: true,
+        },
+      ],
+      'Filter Inserter Test'
+    );
+    const roundTripped = parseBlueprintToEntities(bpWithFilter, index);
+    expect(roundTripped.entities[0].isFiltered).toBe(true);
+    expect(roundTripped.entities[0].inserterItems).toEqual(['iron-ore']);
+  });
+
+  it('uses filtered inserters on mixed cargo wagons keeping unloaded balancer lanes strictly item-pure', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 30 }], // requires iron-plate + copper-plate
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'fast-transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      trainStation: {
+        tileX: 0,
+        tileY: 32,
+        direction: 4,
+        wagonCount: 1, // Single mixed cargo wagon must carry both plates!
+        slotsPerWagon: 40,
+      },
+    });
+
+    const filteredInserters = layout.entities.filter((e) => e.kind === 'inserter' && e.isFiltered);
+    expect(filteredInserters.length).toBeGreaterThan(0);
+
+    // Every wagon-unloading splitter & chest on this 2-item mixed wagon stays single-item pure (no mixing!)
+    const chests = layout.entities.filter((e) => e.name === 'steel-chest');
+    expect(chests.length).toBe(6);
+    const chestItems = new Set(chests.map((c) => c.chestFilterItem).filter(Boolean));
+    expect(chestItems.has('iron-plate')).toBe(true);
+    expect(chestItems.has('copper-plate')).toBe(true);
+  });
+
+  it('resolves live Factorio Wiki in-game entity URLs for Vanilla, Space Age, and Krastorio 2', async () => {
+    const { getWikiEntitySpriteUrl } = await import('../../assets/wikiEntitySprites.ts');
+
+    expect(getWikiEntitySpriteUrl('assembling-machine-2')).toBe(
+      'https://wiki.factorio.com/images/Assembling_machine_2_entity_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('beacon')).toBe(
+      'https://wiki.factorio.com/images/Beacon_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('foundry')).toBe(
+      'https://wiki.factorio.com/images/Foundry_entity_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('kr-crusher')).toBe(
+      'https://wiki.factorio.com/images/Crusher_entity_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('substation')).toBe(
+      'https://wiki.factorio.com/images/Substation_entity.png'
+    );
+    expect(getWikiEntitySpriteUrl('roboport')).toBe(
+      'https://wiki.factorio.com/images/Roboport_entity_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('steel-chest')).toBe(
+      'https://wiki.factorio.com/images/Steel_chest_entity.png'
+    );
+  });
+
+  it('defaults new blank projects to the starter 15/s transport-belt tier', async () => {
+    const { createBlankProject } = await import('../../state/projectsStore.ts');
+    const blank = createBlankProject();
+    expect(blank.config.defaultBeltId).toBe('transport-belt');
+    const beltDef = index.beltsById.get(blank.config.defaultBeltId!);
+    expect(beltDef?.throughputPerSec).toBe(15);
+  });
+
+  it('preserves raw blueprint fields (wires, station, control_behavior, bars) intact on grid frame round-trip', async () => {
+    const { buildBlueprintJson } = await import('../blueprintCodec.ts');
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Intact Grid Test',
+        version: 562949958139904,
+        entities: [
+          {
+            entity_number: 10,
+            name: 'train-stop',
+            position: { x: 2, y: 2 },
+            direction: 4,
+            station: '[item=iron-plate] Unload',
+            color: { r: 0.2, g: 0.8, b: 1, a: 1 },
+          },
+          {
+            entity_number: 11,
+            name: 'steel-chest',
+            position: { x: 4.5, y: 2.5 },
+            bar: 4,
+            control_behavior: { circuit_condition: { first_signal: { type: 'item', name: 'iron-plate' } } },
+          },
+        ],
+        wires: [[10, 1, 11, 1]],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const frameMarked = parsed.entities.map((e) => ({ ...e, isGridFrame: true }));
+    const exported = buildBlueprintJson(frameMarked, 'Intact Grid Test');
+
+    const exportedStop = exported.blueprint.entities.find((e) => e.name === 'train-stop');
+    const exportedChest = exported.blueprint.entities.find((e) => e.name === 'steel-chest');
+    expect(exportedStop?.station).toBe('[item=iron-plate] Unload');
+    expect(exportedStop?.color).toEqual({ r: 0.2, g: 0.8, b: 1, a: 1 });
+    expect(exportedChest?.bar).toBe(4);
+    expect(exportedChest?.control_behavior).toBeDefined();
+  });
+
+  it('rotates generated production blueprint by 90°/180°/270° while keeping imported grid frame intact and collision-free', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 7.5 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+
+    for (const rot of [4, 8, 12] as const) {
+      const layout = synthesizeFactoryLayout(index, solveResult, config, {
+        compactionMode: 'compact',
+        inputSide: 'south',
+        gridFrame: parsedFrame.entities,
+        layoutRotation: rot,
+      });
+
+      const frameOut = layout.entities.filter((e) => e.isGridFrame);
+      expect(frameOut.length).toBe(parsedFrame.entities.length);
+
+      const occupied = new Set<string>();
+      for (const e of layout.entities) {
+        for (let dx = 0; dx < e.width; dx++) {
+          for (let dy = 0; dy < e.height; dy++) {
+            const key = `${e.tileX + dx},${e.tileY + dy}`;
+            expect(occupied.has(key)).toBe(false);
+            occupied.add(key);
+          }
+        }
+      }
+    }
+  });
+
+  it('supports placing a free custom train-stop siding anywhere on an imported rail grid without collisions', () => {
+    const config = {
+      packId: DEFAULT_PACK_ID,
+      targets: [{ itemId: 'electronic-circuit', ratePerSec: 7.5 }],
+      rawResourceOverrides: ['iron-plate', 'copper-plate'],
+      defaultBeltId: 'transport-belt',
+    };
+    const solveResult = solveProductionPlan(index, config);
+    const parsedFrame = parseBlueprintToEntities(createSampleRailCityBlockString(), index);
+
+    const layout = synthesizeFactoryLayout(index, solveResult, config, {
+      compactionMode: 'compact',
+      gridFrame: parsedFrame.entities,
+      trainStation: {
+        tileX: 28,
+        tileY: -10,
+        direction: 4,
+        wagonCount: 2,
+        slotsPerWagon: 40,
+      },
+    });
+
+    const customStops = layout.entities.filter((e) => e.name === 'train-stop' && !e.isGridFrame);
+    expect(customStops.length).toBe(1);
+    expect(customStops[0].tileX).toBe(28);
+    expect(customStops[0].tileY).toBe(-10);
+
+    const chests = layout.entities.filter((e) => e.name === 'steel-chest');
+    expect(chests.length).toBeGreaterThanOrEqual(4);
+
+    const occupied = new Set<string>();
+    for (const e of layout.entities) {
+      for (let dx = 0; dx < e.width; dx++) {
+        for (let dy = 0; dy < e.height; dy++) {
+          const key = `${e.tileX + dx},${e.tileY + dy}`;
+          expect(occupied.has(key)).toBe(false);
+          occupied.add(key);
+        }
+      }
+    }
+  });
+});
 
 

@@ -47,6 +47,18 @@ const DEFAULT_CANONICAL_RECIPES: Record<string, string> = {
   'kr-rare-metal-ore': 'mining-kr-rare-metal-ore',
   'kr-imersite': 'mining-kr-imersite',
   'kr-mineral-water': 'extract-kr-mineral-water',
+  wood: 'kr-grow-wood',
+  'kr-coke': 'kr-coke',
+  'kr-blank-tech-card': 'kr-blank-tech-card',
+  'kr-biters-research-data': 'kr-biters-research-data',
+  'kr-matter-research-data': 'kr-matter-research-data',
+  'kr-electronic-components': 'kr-electronic-components',
+  'kr-automation-core': 'kr-automation-core',
+  'kr-inserter-parts': 'kr-inserter-parts',
+  'kr-iron-beam': 'kr-iron-beam',
+  'kr-steel-beam': 'kr-steel-beam',
+  'kr-steel-gear-wheel': 'kr-steel-gear-wheel',
+  'kr-matter': 'kr-matter-from-imersite',
 };
 
 export function pickRecipeForItem(
@@ -113,6 +125,10 @@ export function pickMachineForRecipe(
   if (recipe.category === 'mining') {
     const drill = compatible.find((m) => m.id === 'electric-mining-drill');
     if (drill) return drill;
+  }
+  if (recipe.category === 't3-tech-cards') {
+    const researchServer = compatible.find((m) => m.id === 'kr-research-server');
+    if (researchServer) return researchServer;
   }
   const tier2 = compatible.find((m) => m.id === 'assembling-machine-2');
   if (tier2) return tier2;

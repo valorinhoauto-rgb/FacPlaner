@@ -283,7 +283,8 @@ function layAdaptiveVerticalBelt(
   beltName: string,
   undergroundName: string,
   lanes: { left?: string; right?: string },
-  stageId?: string
+  stageId?: string,
+  maxJump = 5
 ): void {
   let y = yBottom - 1;
   while (y >= yTop) {
@@ -294,12 +295,12 @@ function layAdaptiveVerticalBelt(
       continue;
     }
 
-    // Attempt to jump upward past obstacle (North direction = 0) up to 5 tiles
+    // Attempt to jump upward past obstacle (North direction = 0) up to maxJump tiles
     let jumped = false;
     const entryY = y + 1;
     const entryEnt = grid.getAt(x, entryY);
     if (entryEnt && entryEnt.kind === 'transport-belt' && entryEnt.direction === 0 && !entryEnt.isGridFrame) {
-      for (let jump = 2; jump <= 5; jump++) {
+      for (let jump = 2; jump <= maxJump; jump++) {
         const landY = entryY - jump;
         if (landY < yTop) break;
         if (!grid.getAt(x, landY)) {
@@ -429,6 +430,8 @@ interface StageAnchor {
   entryDir?: Direction;
   itemId: string;
   kind: 'item' | 'fluid';
+  ratePerSec?: number;
+  beltsRequired?: number;
 }
 
 /**
@@ -481,6 +484,90 @@ function packSolidInputBelts(
   return tracks;
 }
 
+function rotateBoxCWSteps(
+  tileX: number,
+  tileY: number,
+  width: number,
+  height: number,
+  px: number,
+  py: number,
+  stepsCW: number
+): { tileX: number; tileY: number; width: number; height: number } {
+  let x = tileX;
+  let y = tileY;
+  let w = width;
+  let h = height;
+  const s = ((stepsCW % 4) + 4) % 4;
+  for (let i = 0; i < s; i++) {
+    const nx = px - (y + h - py);
+    const ny = py + (x - px);
+    x = nx;
+    y = ny;
+    const tmp = w;
+    w = h;
+    h = tmp;
+  }
+  return { tileX: x, tileY: y, width: w, height: h };
+}
+
+function rotateOffsetCWSteps(
+  offX: number | undefined,
+  offY: number | undefined,
+  stepsCW: number
+): { bpOffsetX?: number; bpOffsetY?: number } {
+  if (!offX && !offY) return {};
+  let ox = offX ?? 0;
+  let oy = offY ?? 0;
+  const s = ((stepsCW % 4) + 4) % 4;
+  for (let i = 0; i < s; i++) {
+    const nx = -oy;
+    const ny = ox;
+    ox = nx;
+    oy = ny;
+  }
+  return {
+    bpOffsetX: Math.abs(ox) > 1e-4 ? ox : undefined,
+    bpOffsetY: Math.abs(oy) > 1e-4 ? oy : undefined,
+  };
+}
+
+function rotateDirCWSteps(dir: Direction, stepsCW: number): Direction {
+  const s = ((stepsCW % 4) + 4) % 4;
+  return (((dir + s * 4) % 16) as Direction);
+}
+
+function rotatePortSideCWSteps(
+  side: 'north' | 'east' | 'south' | 'west',
+  stepsCW: number
+): 'north' | 'east' | 'south' | 'west' {
+  const order: Array<'north' | 'east' | 'south' | 'west'> = ['north', 'east', 'south', 'west'];
+  const idx = order.indexOf(side);
+  return order[(idx + (((stepsCW % 4) + 4) % 4)) % 4];
+}
+
+function rotateEntityCWSteps(
+  ent: GridEntity,
+  px: number,
+  py: number,
+  stepsCW: number
+): GridEntity {
+  const s = ((stepsCW % 4) + 4) % 4;
+  if (s === 0) return ent;
+  const box = rotateBoxCWSteps(ent.tileX, ent.tileY, ent.width, ent.height, px, py, s);
+  const off = rotateOffsetCWSteps(ent.bpOffsetX, ent.bpOffsetY, s);
+  return {
+    ...ent,
+    tileX: box.tileX,
+    tileY: box.tileY,
+    width: box.width,
+    height: box.height,
+    bpOffsetX: off.bpOffsetX,
+    bpOffsetY: off.bpOffsetY,
+    direction: rotateDirCWSteps(ent.direction, s),
+    rawDirection: ent.rawDirection !== undefined ? (ent.rawDirection + s * 4) % 16 : undefined,
+  };
+}
+
 /**
  * Generates a physical 2D Factorio tile layout (machines, dual-lane belts,
  * splitters, underground belts, inserters 1-tile & 2-tile long-handed, pipes,
@@ -493,7 +580,152 @@ export function synthesizeFactoryLayout(
   config: PlanConfig,
   modeOrOptions: 'compact' | 'standard' | LayoutSynthesisOptions = 'compact'
 ): SynthesizedLayout {
-  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame' | 'trainStation'>> & {
+  if (typeof modeOrOptions === 'string') {
+    return synthesizeFactoryLayoutCore(index, solveResult, config, modeOrOptions);
+  }
+
+  const rawRot = modeOrOptions.layoutRotation ?? 0;
+  const rotSteps = (((Math.round(rawRot / 4) % 4) + 4) % 4);
+  if (rotSteps === 0) {
+    return synthesizeFactoryLayoutCore(index, solveResult, config, modeOrOptions);
+  }
+
+  const invSteps = (4 - rotSteps) % 4;
+  let pivotX = 0;
+  let pivotY = 0;
+  if (modeOrOptions.gridFrame && modeOrOptions.gridFrame.length > 0) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const fe of modeOrOptions.gridFrame) {
+      minX = Math.min(minX, fe.tileX);
+      minY = Math.min(minY, fe.tileY);
+      maxX = Math.max(maxX, fe.tileX + fe.width);
+      maxY = Math.max(maxY, fe.tileY + fe.height);
+    }
+    pivotX = Math.round((minX + maxX) / 2);
+    pivotY = Math.round((minY + maxY) / 2);
+  }
+
+  const rotatedFrame = modeOrOptions.gridFrame?.map((fe) => ({
+    ...rotateEntityCWSteps(fe, pivotX, pivotY, invSteps),
+    isGridFrame: true,
+  }));
+
+  let rotatedStation = modeOrOptions.trainStation;
+  if (rotatedStation) {
+    const sb = rotateBoxCWSteps(rotatedStation.tileX, rotatedStation.tileY, 2, 2, pivotX, pivotY, invSteps);
+    rotatedStation = {
+      ...rotatedStation,
+      tileX: sb.tileX,
+      tileY: sb.tileY,
+      direction: rotateDirCWSteps(rotatedStation.direction, invSteps),
+    };
+  }
+
+  const offVec = rotateOffsetCWSteps(
+    modeOrOptions.productionOffsetX ?? 0,
+    modeOrOptions.productionOffsetY ?? 0,
+    invSteps
+  );
+
+  const canonicalResult = synthesizeFactoryLayoutCore(index, solveResult, config, {
+    ...modeOrOptions,
+    layoutRotation: 0,
+    gridFrame: rotatedFrame,
+    trainStation: rotatedStation,
+    productionOffsetX: Math.round(offVec.bpOffsetX ?? 0),
+    productionOffsetY: Math.round(offVec.bpOffsetY ?? 0),
+  });
+
+  const frameEntityNums = new Set((rotatedFrame ?? []).map((fe) => fe.entityNumber));
+  let maxFrameNum = 0;
+  const untouchedFrame: GridEntity[] = [];
+  for (const fe of modeOrOptions.gridFrame ?? []) {
+    untouchedFrame.push(fe.isGridFrame ? fe : { ...fe, isGridFrame: true });
+    if (fe.entityNumber > maxFrameNum) maxFrameNum = fe.entityNumber;
+  }
+
+  let nextGeneratedNum = maxFrameNum + 1;
+  const usedNums = new Set(untouchedFrame.map((fe) => fe.entityNumber));
+  const rotatedGenerated: GridEntity[] = [];
+  for (const ge of canonicalResult.entities) {
+    if (ge.isGridFrame && frameEntityNums.has(ge.entityNumber)) {
+      continue;
+    }
+    const rotEnt = rotateEntityCWSteps(ge, pivotX, pivotY, rotSteps);
+    while (usedNums.has(nextGeneratedNum)) nextGeneratedNum++;
+    usedNums.add(nextGeneratedNum);
+    rotatedGenerated.push({
+      ...rotEnt,
+      entityNumber: nextGeneratedNum++,
+    });
+  }
+
+  const finalEntities = [...untouchedFrame, ...rotatedGenerated];
+  const rotatedZones: StageZone[] = canonicalResult.zones.map((z) => {
+    const zb = rotateBoxCWSteps(z.tileX, z.tileY, z.width, z.height, pivotX, pivotY, rotSteps);
+    return {
+      ...z,
+      tileX: zb.tileX,
+      tileY: zb.tileY,
+      width: zb.width,
+      height: zb.height,
+    };
+  });
+
+  const rotatedPorts: LayoutPortMarker[] = canonicalResult.ports.map((p) => {
+    const pb = rotateBoxCWSteps(p.tileX, p.tileY, 1, 1, pivotX, pivotY, rotSteps);
+    return {
+      ...p,
+      tileX: pb.tileX,
+      tileY: pb.tileY,
+      side: rotatePortSideCWSteps(p.side, rotSteps),
+    };
+  });
+
+  let restoredReport = canonicalResult.gridFitReport;
+  if (restoredReport) {
+    const ib = restoredReport.interiorBounds;
+    const rb = rotateBoxCWSteps(
+      ib.minX,
+      ib.minY,
+      ib.maxX - ib.minX,
+      ib.maxY - ib.minY,
+      pivotX,
+      pivotY,
+      rotSteps
+    );
+    restoredReport = {
+      ...restoredReport,
+      interiorBounds: {
+        minX: rb.tileX,
+        minY: rb.tileY,
+        maxX: rb.tileX + rb.width,
+        maxY: rb.tileY + rb.height,
+      },
+      interiorWidth: rb.width,
+      interiorHeight: rb.height,
+    };
+  }
+
+  return finalizeLayout(
+    finalEntities,
+    rotatedZones,
+    rotatedPorts,
+    canonicalResult.compactionMode,
+    restoredReport
+  );
+}
+
+function synthesizeFactoryLayoutCore(
+  index: PackIndex,
+  solveResult: SolveResult,
+  config: PlanConfig,
+  modeOrOptions: 'compact' | 'standard' | LayoutSynthesisOptions = 'compact'
+): SynthesizedLayout {
+  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame' | 'trainStation' | 'layoutRotation' | 'manualFlowPaths'>> & {
     gridFrame?: GridEntity[];
     trainStation?: TrainStationConfig;
   } =
@@ -537,12 +769,12 @@ export function synthesizeFactoryLayout(
   let totalPlacedMachines = 0;
 
   const beltDef =
-    index.beltsById.get(config.defaultBeltId ?? 'express-transport-belt') ??
-    index.pack.belts[index.pack.belts.length - 1];
-  const beltName = beltDef?.id ?? 'express-transport-belt';
+    index.beltsById.get(config.defaultBeltId ?? 'transport-belt') ??
+    index.pack.belts[0];
+  const beltName = beltDef?.id ?? 'transport-belt';
   const undergroundName = beltDef?.undergroundId ?? 'underground-belt';
   const splitterName = beltDef?.splitterId ?? 'splitter';
-  const beltThroughput = beltDef?.throughputPerSec ?? 45;
+  const beltThroughput = beltDef?.throughputPerSec ?? 15;
   const beltMaxJump =
     beltName.includes('turbo')
       ? 11
@@ -671,14 +903,26 @@ export function synthesizeFactoryLayout(
       feederMachine ? feederMachine.tileSize.height : mH
     );
 
+    const maxSolidInputRate = stage.inputs
+      .filter((i) => i.kind === 'item' && i.itemId !== directPair?.itemId)
+      .reduce((m, i) => Math.max(m, i.actualTotalPerSec), 0);
+    const maxSolidOutputRate = stage.outputs
+      .filter((o) => o.kind === 'item')
+      .reduce((m, o) => Math.max(m, o.actualTotalPerSec), 0);
+    const minBeltsForCapacity = Math.max(
+      1,
+      Math.ceil(Math.max(maxSolidInputRate, maxSolidOutputRate) / beltThroughput - 1e-6)
+    );
+
     const maxPerColUnbounded = compactionMode === 'compact' ? 10 : 8;
     const maxRowsByGridHeight = interiorBounds
       ? Math.max(1, Math.floor(availInteriorH / rowStepY))
       : maxPerColUnbounded;
 
-    // Reserve twin columns only when solid inputs <= 2 (so 3-input recipes keep 3 clean separate tracks)
+    // Reserve twin columns only when solid inputs <= 2 AND total throughput fits on 1 belt
     const useTwinColumns =
       !directPair &&
+      minBeltsForCapacity === 1 &&
       count >= 6 &&
       !hasFluid &&
       solidInputCount <= 2 &&
@@ -719,13 +963,29 @@ export function synthesizeFactoryLayout(
         ? feederMachine.tileSize.width + 1 + (feederTracks.length > 0 ? feederTracks.length + 2 : 0)
         : 0;
 
+    const naturalCols = Math.max(1, Math.ceil(count / maxPerColUnbounded));
     let cols = useTwinColumns
       ? 2
       : interiorBounds
-        ? Math.max(1, Math.ceil(count / Math.min(maxPerColUnbounded, maxRowsByGridHeight)))
-        : Math.min(4, Math.max(1, Math.ceil(count / maxPerColUnbounded)));
+        ? Math.min(count, Math.max(Math.ceil(count / Math.min(maxPerColUnbounded, maxRowsByGridHeight)), minBeltsForCapacity))
+        : minBeltsForCapacity > 1
+          ? Math.min(count, Math.max(Math.min(4, naturalCols), Math.min(24, minBeltsForCapacity)))
+          : Math.min(4, naturalCols);
 
-    const colGap = useTwinColumns ? 3 : (inputTracks.length > 2 ? 6 : 4) + feederUnitW;
+    const hasSolidOutput = stage.outputs.some((o) => o.kind === 'item');
+    const rightOverhang =
+      inputTracks.length > 2 || directPair ? 2 : hasSolidOutput ? 1 : 0;
+    const leftOverhang =
+      directPair && feederMachine
+        ? feederMachine.tileSize.width + 3
+        : inputTracks.length >= 2
+          ? 3
+          : inputTracks.length === 1
+            ? 2
+            : 0;
+    const colGap = useTwinColumns
+      ? 3
+      : Math.max(inputTracks.length > 2 ? 7 : 5, rightOverhang + leftOverhang + 2);
     const fixedW =
       beaconStripW +
       leftCorridorW +
@@ -746,6 +1006,12 @@ export function synthesizeFactoryLayout(
     const rows = interiorBounds
       ? Math.min(maxRowsByGridHeight, Math.ceil(count / cols))
       : Math.ceil(count / cols);
+
+    // Reserve extra vertical clearance between layers when multi-column splitter trees stack
+    const maxColsPerGroup = Math.max(1, Math.ceil(cols / minBeltsForCapacity));
+    const treeLevels = maxColsPerGroup > 1 ? Math.ceil(Math.log2(maxColsPerGroup)) : 0;
+    const bottomManifoldH = treeLevels * 3 * Math.max(1, inputTracks.length);
+    const topManifoldH = !useTwinColumns && minBeltsForCapacity === 1 && cols > 1 ? treeLevels * 3 : 0;
 
     const blockW = fixedW + cols * mW + Math.max(0, cols - 1) * colGap;
     const blockH = Math.max(mH, rows * rowStepY - (hasFluid ? 1 : 0));
@@ -772,18 +1038,22 @@ export function synthesizeFactoryLayout(
       colGap,
       blockW,
       blockH,
+      bottomManifoldH,
+      topManifoldH,
     };
   };
 
   type BlockPlan = ReturnType<typeof buildBlockPlan>;
-  const shelves: Array<{ items: BlockPlan[]; totalW: number; maxH: number }> = [];
+  const shelves: Array<{ items: BlockPlan[]; totalW: number; maxH: number; maxBottomManifold: number; maxTopManifold: number }> = [];
 
   for (const layerIdx of sortedLayers) {
     const layerPlans = layersMap.get(layerIdx)!.map(buildBlockPlan);
-    let currentShelf: { items: BlockPlan[]; totalW: number; maxH: number } = {
+    let currentShelf: { items: BlockPlan[]; totalW: number; maxH: number; maxBottomManifold: number; maxTopManifold: number } = {
       items: [],
       totalW: 0,
       maxH: 0,
+      maxBottomManifold: 0,
+      maxTopManifold: 0,
     };
 
     for (const bp of layerPlans) {
@@ -793,11 +1063,19 @@ export function synthesizeFactoryLayout(
           : bp.blockW;
       if (interiorBounds && currentShelf.items.length > 0 && nextW > availInteriorW) {
         shelves.push(currentShelf);
-        currentShelf = { items: [bp], totalW: bp.blockW, maxH: bp.blockH };
+        currentShelf = {
+          items: [bp],
+          totalW: bp.blockW,
+          maxH: bp.blockH,
+          maxBottomManifold: bp.bottomManifoldH,
+          maxTopManifold: bp.topManifoldH,
+        };
       } else {
         currentShelf.items.push(bp);
         currentShelf.totalW = nextW;
         currentShelf.maxH = Math.max(currentShelf.maxH, bp.blockH);
+        currentShelf.maxBottomManifold = Math.max(currentShelf.maxBottomManifold, bp.bottomManifoldH);
+        currentShelf.maxTopManifold = Math.max(currentShelf.maxTopManifold, bp.topManifoldH);
       }
     }
     if (currentShelf.items.length > 0) {
@@ -805,9 +1083,14 @@ export function synthesizeFactoryLayout(
     }
   }
 
+  const shelfGaps = shelves.map((s, idx) => {
+    if (idx === shelves.length - 1) return 0;
+    const next = shelves[idx + 1];
+    return Math.max(layerGapY, 3 + s.maxTopManifold + next.maxBottomManifold);
+  });
   const totalFactoryH =
     shelves.reduce((sum, s) => sum + s.maxH, 0) +
-    Math.max(0, shelves.length - 1) * layerGapY;
+    shelfGaps.reduce((sum, g) => sum + g, 0);
   const maxShelfW = shelves.reduce((m, s) => Math.max(m, s.totalW), 0);
 
   let currentBaseY: number;
@@ -824,7 +1107,8 @@ export function synthesizeFactoryLayout(
     currentBaseY = options.productionOffsetY;
   }
 
-  for (const shelf of shelves) {
+  for (let shelfIdx = 0; shelfIdx < shelves.length; shelfIdx++) {
+    const shelf = shelves[shelfIdx];
     let currentX: number;
     if (interiorBounds) {
       const interiorCenterX = Math.round((safeMinX + safeMaxX) / 2);
@@ -940,6 +1224,8 @@ export function synthesizeFactoryLayout(
       // 1. Place Machines in compact columns (stepping smoothly around interior grid obstacles)
       let placedMachines = 0;
       let placedFeeders = 0;
+      let twinCenterBeltX: number | null = null;
+      let twinOutputBottomY = -Infinity;
 
       for (let c = 0; c < cols; c++) {
         const mX = machinesStartX + c * (mW + bp.colGap);
@@ -948,6 +1234,9 @@ export function synthesizeFactoryLayout(
         let colCursorY = blockBottomY - mH;
         const colMinY = interiorBounds ? Math.max(blockTopY, safeMinY) : blockTopY;
         let placedInCol = 0;
+        let colOutputBottomY = -Infinity;
+        let colFeederInTopY = Infinity;
+        const colInTopY = [Infinity, Infinity, Infinity];
 
         while (placedMachines < count && placedInCol < effectiveRows && colCursorY >= colMinY) {
           const feederXNeeded = directPair && feederMachine ? mX - 1 - feederMachine.tileSize.width : mX;
@@ -1023,11 +1312,13 @@ export function synthesizeFactoryLayout(
             });
 
             if (feederTracks[0]) {
+              const fInsY = fY + Math.floor(fH / 2);
+              colFeederInTopY = Math.min(colFeederInTopY, fInsY);
               grid.place({
                 kind: 'inserter',
                 name: inserterName,
                 tileX: fX - 1,
-                tileY: fY + Math.floor(fH / 2),
+                tileY: fInsY,
                 width: 1,
                 height: 1,
                 direction: 4,
@@ -1038,15 +1329,15 @@ export function synthesizeFactoryLayout(
             }
           }
 
-          // 2. Place Input Inserters & Outer Belts for this machine
+          // 2. Place Input Inserters & Output Inserters for this machine
           if (useTwinColumns) {
             const isLeftCol = c === 0;
-            const beltEdgeX = isLeftCol ? mX - 2 : mX + mW + 1;
             const insX = isLeftCol ? mX - 1 : mX + mW;
             const insDir: Direction = isLeftCol ? 4 : 12;
 
             if (inputTracks[0]) {
               const t0 = inputTracks[0];
+              colInTopY[0] = Math.min(colInTopY[0], midY);
               grid.place({
                 kind: 'inserter',
                 name: inserterName,
@@ -1062,13 +1353,14 @@ export function synthesizeFactoryLayout(
             }
 
             if (inputTracks[1]) {
-              const outerBeltX = isLeftCol ? beltEdgeX - 1 : beltEdgeX + 1;
               const longInsX = isLeftCol ? mX - 1 : mX + mW;
+              const longY = Math.max(mY, midY - 1);
+              colInTopY[1] = Math.min(colInTopY[1], longY);
               grid.place({
                 kind: 'inserter',
                 name: longInserterName,
                 tileX: longInsX,
-                tileY: Math.max(mY, midY - 1),
+                tileY: longY,
                 width: 1,
                 height: 1,
                 direction: insDir,
@@ -1076,23 +1368,13 @@ export function synthesizeFactoryLayout(
                 inserterItems: [inputTracks[1].itemId],
                 stageId: stage.id,
               });
-              for (let y = mY; y < mY + rowStepY; y++) {
-                grid.placeOrMergeBelt(
-                  outerBeltX,
-                  y,
-                  beltName,
-                  0,
-                  inputTracks[1].partnerItemId
-                    ? { left: inputTracks[1].itemId, right: inputTracks[1].partnerItemId }
-                    : { left: inputTracks[1].itemId, right: inputTracks[1].itemId },
-                  stage.id
-                );
-              }
             }
 
             if (mainSolidOutput) {
               const outInsX = isLeftCol ? mX + mW : mX - 1;
               const outInsDir: Direction = isLeftCol ? 4 : 12;
+              colOutputBottomY = Math.max(colOutputBottomY, midY);
+              twinOutputBottomY = Math.max(twinOutputBottomY, midY);
               grid.place({
                 kind: 'inserter',
                 name: inserterName,
@@ -1124,15 +1406,16 @@ export function synthesizeFactoryLayout(
             }
           } else {
             const leftGapX = directPair && feederMachine ? mX - 1 - feederMachine.tileSize.width - 1 : mX - 1;
-            const inputBeltBaseX = directPair && feederMachine ? mX + mW + 2 : mX - 2;
 
             if (inputTracks[0]) {
               if (directPair) {
+                const longY = Math.max(mY, midY - 1);
+                colInTopY[0] = Math.min(colInTopY[0], longY);
                 grid.place({
                   kind: 'inserter',
                   name: longInserterName,
                   tileX: mX + mW,
-                  tileY: Math.max(mY, midY - 1),
+                  tileY: longY,
                   width: 1,
                   height: 1,
                   direction: 12,
@@ -1143,6 +1426,7 @@ export function synthesizeFactoryLayout(
                   stageId: stage.id,
                 });
               } else {
+                colInTopY[0] = Math.min(colInTopY[0], midY);
                 grid.place({
                   kind: 'inserter',
                   name: inserterName,
@@ -1160,11 +1444,13 @@ export function synthesizeFactoryLayout(
               }
             }
             if (inputTracks[1] && !directPair) {
+              const longY = Math.max(mY, midY - 1);
+              colInTopY[1] = Math.min(colInTopY[1], longY);
               grid.place({
                 kind: 'inserter',
                 name: longInserterName,
                 tileX: mX - 1,
-                tileY: Math.max(mY, midY - 1),
+                tileY: longY,
                 width: 1,
                 height: 1,
                 direction: 4,
@@ -1174,11 +1460,13 @@ export function synthesizeFactoryLayout(
               });
             }
             if (inputTracks[2] && !directPair) {
+              const longY = Math.max(mY, midY - 1);
+              colInTopY[2] = Math.min(colInTopY[2], longY);
               grid.place({
                 kind: 'inserter',
                 name: longInserterName,
                 tileX: mX + mW,
-                tileY: Math.max(mY, midY - 1),
+                tileY: longY,
                 width: 1,
                 height: 1,
                 direction: 12,
@@ -1189,6 +1477,7 @@ export function synthesizeFactoryLayout(
             }
 
             if (mainSolidOutput) {
+              colOutputBottomY = Math.max(colOutputBottomY, midY);
               grid.place({
                 kind: 'inserter',
                 name: inserterName,
@@ -1230,8 +1519,6 @@ export function synthesizeFactoryLayout(
                 });
               }
             }
-
-            void inputBeltBaseX;
           }
 
           colCursorY -= rowStepY;
@@ -1239,12 +1526,17 @@ export function synthesizeFactoryLayout(
 
         if (placedInCol === 0) continue;
 
-        // Lay continuous vertical belts for this column (adapting around grid obstacles via undergrounds!)
+        // Lay vertical belts trimmed strictly to the outermost active inserters in this column
+        // (zero dangling dead tiles before the first output inserter or after the last input inserter)
         const recordTrackCol = (tIdx: number, bx: number) => {
           const arr = colTrackXs.get(tIdx) ?? [];
           arr.push(bx);
           colTrackXs.set(tIdx, arr);
         };
+        const resolveInputTopY = (tIdx: number) =>
+          Number.isFinite(colInTopY[tIdx])
+            ? Math.max(blockTopY, Math.min(blockBottomY - 1, colInTopY[tIdx]))
+            : blockTopY;
 
         if (useTwinColumns) {
           const isLeftCol = c === 0;
@@ -1254,7 +1546,7 @@ export function synthesizeFactoryLayout(
             layAdaptiveVerticalBelt(
               grid,
               beltX,
-              blockTopY,
+              resolveInputTopY(0),
               blockBottomY,
               beltName,
               undergroundName,
@@ -1271,7 +1563,7 @@ export function synthesizeFactoryLayout(
             layAdaptiveVerticalBelt(
               grid,
               outerBeltX,
-              blockTopY,
+              resolveInputTopY(1),
               blockBottomY,
               beltName,
               undergroundName,
@@ -1284,32 +1576,19 @@ export function synthesizeFactoryLayout(
           }
 
           if (c === 0 && mainSolidOutput) {
-            const centerBeltX = mX + mW + 1;
-            layAdaptiveVerticalBelt(
-              grid,
-              centerBeltX,
-              blockTopY,
-              blockBottomY,
-              beltName,
-              undergroundName,
-              { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId },
-              stage.id
-            );
-            outAnchors.push({
-              x: centerBeltX,
-              y: blockTopY,
-              itemId: mainSolidOutput.itemId,
-              kind: 'item',
-            });
+            twinCenterBeltX = mX + mW + 1;
           }
         } else {
           if (directPair && feederMachine && feederTracks[0] && c === 0) {
             const ft0 = feederTracks[0];
             const fbX = mX - 1 - feederMachine.tileSize.width - 2;
+            const feederTopY = Number.isFinite(colFeederInTopY)
+              ? Math.max(blockTopY, Math.min(blockBottomY - 1, colFeederInTopY))
+              : blockTopY;
             layAdaptiveVerticalBelt(
               grid,
               fbX,
-              blockTopY,
+              feederTopY,
               blockBottomY,
               beltName,
               undergroundName,
@@ -1330,7 +1609,7 @@ export function synthesizeFactoryLayout(
             layAdaptiveVerticalBelt(
               grid,
               bX,
-              blockTopY,
+              resolveInputTopY(0),
               blockBottomY,
               beltName,
               undergroundName,
@@ -1347,7 +1626,7 @@ export function synthesizeFactoryLayout(
             layAdaptiveVerticalBelt(
               grid,
               bX,
-              blockTopY,
+              resolveInputTopY(1),
               blockBottomY,
               beltName,
               undergroundName,
@@ -1360,11 +1639,15 @@ export function synthesizeFactoryLayout(
           }
           if (mainSolidOutput) {
             const outX = mX + mW + 1;
+            const outBottomY =
+              colOutputBottomY > -Infinity
+                ? Math.min(blockBottomY, colOutputBottomY + 1)
+                : blockBottomY;
             layAdaptiveVerticalBelt(
               grid,
               outX,
               blockTopY,
-              blockBottomY,
+              outBottomY,
               beltName,
               undergroundName,
               { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId },
@@ -1378,7 +1661,7 @@ export function synthesizeFactoryLayout(
             layAdaptiveVerticalBelt(
               grid,
               bX,
-              blockTopY,
+              resolveInputTopY(2),
               blockBottomY,
               beltName,
               undergroundName,
@@ -1392,109 +1675,306 @@ export function synthesizeFactoryLayout(
         }
       }
 
-      // Unify multi-column solid inputs (both twin-column and multi-column) into 1 clean stage anchor per track
-      const wireTrackUnifiedAnchor = (tIdx: number, track: BeltTrack, colXs: number[]) => {
-        if (colXs.length === 0) return;
-        const primaryX = colXs[0];
-        let entryYBase = blockBottomY - 1;
+      if (useTwinColumns && twinCenterBeltX !== null && mainSolidOutput) {
+        const twinOutBottomY =
+          twinOutputBottomY > -Infinity
+            ? Math.min(blockBottomY, twinOutputBottomY + 1)
+            : blockBottomY;
+        layAdaptiveVerticalBelt(
+          grid,
+          twinCenterBeltX,
+          blockTopY,
+          twinOutBottomY,
+          beltName,
+          undergroundName,
+          { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId },
+          stage.id
+        );
+        outAnchors.push({
+          x: twinCenterBeltX,
+          y: blockTopY,
+          itemId: mainSolidOutput.itemId,
+          kind: 'item',
+        });
+      }
 
-        if (colXs.length > 1) {
-          // Wire column 0..N together via a bottom distribution manifold + splitter
-          const splitY = blockBottomY + 1 + tIdx * 3;
-          const busY = blockBottomY + tIdx * 3;
-          const midX = Math.floor((colXs[0] + colXs[colXs.length - 1]) / 2);
-          const lanes = track.partnerItemId
-            ? { left: track.itemId, right: track.partnerItemId }
-            : { left: track.itemId, right: track.itemId };
-          const maxBusY = interiorBounds ? interiorBounds.maxY - 2 : Infinity;
+      // Wire column groups cleanly using capacity-bounded <= 1.0-belt binary splitter trees
+      // (zero butt-joints, zero orphaned sideways splitters, and realistic multi-belt fan-out).
+      let nextTrackMinBottomY = blockBottomY - 1;
+      const maxBusLimitY = interiorBounds ? interiorBounds.maxY - 2 : Infinity;
+      const minBusLimitY = interiorBounds ? interiorBounds.minY + 1 : -Infinity;
 
-          if (splitY <= maxBusY && grid.canPlace(midX, splitY, 2, 1)) {
+      const connectHorizontalBusArm = (
+        startX: number,
+        targetX: number,
+        busY: number,
+        lanes: { left?: string; right?: string }
+      ) => {
+        if (startX === targetX) return;
+        const step = targetX >= startX ? 1 : -1;
+        const dir: Direction = step > 0 ? 4 : 12;
+        for (let x = startX; step > 0 ? x < targetX : x > targetX; x += step) {
+          const ex = grid.getAt(x, busY);
+          if (!ex) {
+            grid.placeOrMergeBelt(x, busY, beltName, dir, lanes, stage.id);
+          } else if (!ex.isGridFrame) {
+            const prev = grid.getAt(x - step, busY);
+            if (prev && prev.kind === 'transport-belt' && prev.direction === dir) {
+              grid.remove(prev);
+              grid.place({
+                kind: 'underground-belt',
+                name: undergroundName,
+                tileX: x - step,
+                tileY: busY,
+                width: 1,
+                height: 1,
+                direction: dir,
+                undergroundType: 'input',
+                beltLanes: lanes,
+                stageId: stage.id,
+              });
+            }
+            let landX = x + step;
+            while (
+              grid.getAt(landX, busY) &&
+              landX !== targetX &&
+              Math.abs(landX - (x - step)) < beltMaxJump
+            ) {
+              landX += step;
+            }
+            if (landX !== targetX && !grid.getAt(landX, busY)) {
+              grid.place({
+                kind: 'underground-belt',
+                name: undergroundName,
+                tileX: landX,
+                tileY: busY,
+                width: 1,
+                height: 1,
+                direction: dir,
+                undergroundType: 'output',
+                beltLanes: lanes,
+                stageId: stage.id,
+              });
+              x = landX;
+            }
+          }
+        }
+      };
+
+      const findFreeSplitterX = (leftX: number, rightX: number, splitY: number, checkBusY: number): number | null => {
+        const minValidX = Math.min(leftX, rightX);
+        const maxValidX = Math.max(leftX, rightX) - 1;
+        const idealMid = Math.floor((leftX + rightX - 1) / 2);
+        const maxRadius = Math.max(4, Math.abs(rightX - leftX) + 2);
+        for (let off = 0; off <= maxRadius; off++) {
+          const cands = off === 0 ? [idealMid] : [idealMid - off, idealMid + off];
+          for (const sx of cands) {
+            // Prefer splitters whose output slots don't overlap the vertical endpoints themselves when gap >= 3
+            if (Math.abs(rightX - leftX) >= 3 && (sx <= minValidX || sx + 1 >= maxValidX + 1)) {
+              continue;
+            }
+            if (
+              grid.canPlace(sx, splitY, 2, 1) &&
+              !grid.getAt(sx, checkBusY) &&
+              !grid.getAt(sx + 1, checkBusY)
+            ) {
+              return sx;
+            }
+          }
+        }
+        for (let off = 0; off <= 3; off++) {
+          const cands = off === 0 ? [idealMid] : [idealMid - off, idealMid + off];
+          for (const sx of cands) {
+            if (
+              grid.canPlace(sx, splitY, 2, 1) &&
+              !grid.getAt(sx, checkBusY) &&
+              !grid.getAt(sx + 1, checkBusY)
+            ) {
+              return sx;
+            }
+          }
+        }
+        return null;
+      };
+
+      const wireGroupInputTree = (
+        groupColXs: number[],
+        lanes: { left?: string; right?: string },
+        minFloorY: number
+      ): { entryX: number; entryY: number; entryDir: Direction; bottomY: number } => {
+        if (groupColXs.length === 1) {
+          return {
+            entryX: groupColXs[0],
+            entryY: blockBottomY,
+            entryDir: 0,
+            bottomY: blockBottomY - 1,
+          };
+        }
+
+        const wireSub = (
+          subXs: number[],
+          floorY: number
+        ): { x: number; entryY: number; bottomY: number } | null => {
+          if (subXs.length === 1) {
+            return { x: subXs[0], entryY: blockBottomY, bottomY: blockBottomY - 1 };
+          }
+          const mid = Math.floor(subXs.length / 2);
+          const leftRes = wireSub(subXs.slice(0, mid), floorY);
+          const rightRes = wireSub(subXs.slice(mid), floorY);
+          if (!leftRes || !rightRes) return null;
+
+          const baseBottom = Math.max(floorY, leftRes.bottomY, rightRes.bottomY);
+          for (let rowShift = 0; rowShift <= 4; rowShift++) {
+            const busY = baseBottom + 2 + rowShift;
+            const splitY = busY + 1;
+            if (splitY > maxBusLimitY) return null;
+            const sx = findFreeSplitterX(leftRes.x, rightRes.x, splitY, busY);
+            if (sx === null) continue;
+
             grid.place({
               kind: 'splitter',
               name: splitterName,
-              tileX: midX,
+              tileX: sx,
               tileY: splitY,
               width: 2,
               height: 1,
               direction: 0,
+              beltLanes: lanes,
               stageId: stage.id,
             });
 
-            // Connect left arm from midX -> colXs[0] and right arm from midX+1 -> colXs[last]
-            const connectArm = (startX: number, targetX: number) => {
-              const step = targetX >= startX ? 1 : -1;
-              const dir: Direction = step > 0 ? 4 : 12;
-              for (let x = startX; step > 0 ? x <= targetX : x >= targetX; x += step) {
-                if (x === targetX) {
-                  for (let y = busY; y >= blockBottomY; y--) {
-                    grid.placeOrMergeBelt(x, y, beltName, 0, lanes, stage.id);
-                  }
-                } else {
-                  const ex = grid.getAt(x, busY);
-                  if (!ex) {
-                    grid.placeOrMergeBelt(x, busY, beltName, dir, lanes, stage.id);
-                  } else if (!ex.isGridFrame) {
-                    // Jump cleanly underground across intermediate column belts
-                    const prev = grid.getAt(x - step, busY);
-                    if (prev && prev.kind === 'transport-belt' && prev.direction === dir) {
-                      grid.remove(prev);
-                      grid.place({
-                        kind: 'underground-belt',
-                        name: undergroundName,
-                        tileX: x - step,
-                        tileY: busY,
-                        width: 1,
-                        height: 1,
-                        direction: dir,
-                        undergroundType: 'input',
-                        beltLanes: lanes,
-                        stageId: stage.id,
-                      });
-                    }
-                    let landX = x + step;
-                    while (grid.getAt(landX, busY) && Math.abs(landX - (x - step)) < beltMaxJump) {
-                      landX += step;
-                    }
-                    if (!grid.getAt(landX, busY)) {
-                      grid.place({
-                        kind: 'underground-belt',
-                        name: undergroundName,
-                        tileX: landX,
-                        tileY: busY,
-                        width: 1,
-                        height: 1,
-                        direction: dir,
-                        undergroundType: 'output',
-                        beltLanes: lanes,
-                        stageId: stage.id,
-                      });
-                      x = landX;
-                    }
-                  }
-                }
-              }
-            };
+            // Connect left splitter output (sx, busY) -> leftRes.x -> UP into leftRes.entryY
+            connectHorizontalBusArm(sx, leftRes.x, busY, lanes);
+            layAdaptiveVerticalBelt(
+              grid,
+              leftRes.x,
+              leftRes.entryY,
+              busY + 1,
+              beltName,
+              undergroundName,
+              lanes,
+              stage.id,
+              beltMaxJump
+            );
 
-            connectArm(midX, colXs[0]);
-            connectArm(midX + 1, colXs[colXs.length - 1]);
+            // Connect right splitter output (sx+1, busY) -> rightRes.x -> UP into rightRes.entryY
+            connectHorizontalBusArm(sx + 1, rightRes.x, busY, lanes);
+            layAdaptiveVerticalBelt(
+              grid,
+              rightRes.x,
+              rightRes.entryY,
+              busY + 1,
+              beltName,
+              undergroundName,
+              lanes,
+              stage.id,
+              beltMaxJump
+            );
 
+            return { x: sx, entryY: splitY + 1, bottomY: splitY };
+          }
+          return null;
+        };
+
+        const res = wireSub(groupColXs, minFloorY);
+        if (res) {
+          return {
+            entryX: res.x,
+            entryY: res.entryY,
+            entryDir: 0,
+            bottomY: res.bottomY,
+          };
+        }
+        return {
+          entryX: groupColXs[0],
+          entryY: blockBottomY,
+          entryDir: 0,
+          bottomY: blockBottomY - 1,
+        };
+      };
+
+      const wireTrackUnifiedAnchor = (track: BeltTrack, colXs: number[]) => {
+        if (colXs.length === 0) return;
+        const primaryInput = stage.inputs.find((i) => i.itemId === track.itemId && i.kind === 'item');
+        const totalTrackRate = primaryInput?.actualTotalPerSec ?? 0;
+        const totalTrackBelts = totalTrackRate / beltThroughput;
+        const desiredGroups = Math.min(colXs.length, Math.max(1, Math.ceil(totalTrackBelts - 1e-6)));
+
+        const lanes = track.partnerItemId
+          ? { left: track.itemId, right: track.partnerItemId }
+          : { left: track.itemId, right: track.itemId };
+
+        if (desiredGroups > 1) {
+          // Partition columns evenly into N capacity-bounded groups (each <= 1.0 belt when cols allow)
+          let colCursor = 0;
+          let maxTreeBottom = nextTrackMinBottomY;
+          for (let g = 0; g < desiredGroups; g++) {
+            const remainingGroups = desiredGroups - g;
+            const remainingCols = colXs.length - colCursor;
+            const take = Math.ceil(remainingCols / remainingGroups);
+            const sliceCols = colXs.slice(colCursor, colCursor + take);
+            colCursor += take;
+
+            const frac = sliceCols.length / colXs.length;
+            const sliceRate = totalTrackRate * frac;
+            const sliceBelts = totalTrackBelts * frac;
+            const res = wireGroupInputTree(sliceCols, lanes, nextTrackMinBottomY);
+            maxTreeBottom = Math.max(maxTreeBottom, res.bottomY);
             inAnchors.push({
-              x: midX,
-              y: splitY,
-              entryX: midX,
-              entryY: splitY + 1,
-              entryDir: 0,
+              x: res.entryX,
+              y: res.entryY - 1,
+              entryX: res.entryX,
+              entryY: res.entryY,
+              entryDir: res.entryDir,
               itemId: track.itemId,
               kind: 'item',
+              ratePerSec: sliceRate,
+              beltsRequired: sliceBelts,
             });
-            return;
           }
+          nextTrackMinBottomY = Math.max(nextTrackMinBottomY, maxTreeBottom);
+          return;
         }
 
-        // Single column (or cramped fallback): clean vertical entry (with distinct side-load for partner item if present)
+        if (colXs.length > 1) {
+          const res = wireGroupInputTree(colXs, lanes, nextTrackMinBottomY);
+          nextTrackMinBottomY = Math.max(nextTrackMinBottomY, res.bottomY);
+          inAnchors.push({
+            x: res.entryX,
+            y: res.entryY - 1,
+            entryX: res.entryX,
+            entryY: res.entryY,
+            entryDir: res.entryDir,
+            itemId: track.itemId,
+            kind: 'item',
+            ratePerSec: totalTrackRate,
+            beltsRequired: totalTrackBelts,
+          });
+          if (track.partnerItemId) {
+            const pInput = stage.inputs.find((i) => i.itemId === track.partnerItemId && i.kind === 'item');
+            const pRate = pInput?.actualTotalPerSec ?? 0;
+            inAnchors.push({
+              x: res.entryX + 1,
+              y: res.entryY - 1,
+              entryX: res.entryX + 1,
+              entryY: res.entryY,
+              entryDir: 0,
+              itemId: track.partnerItemId,
+              kind: 'item',
+              ratePerSec: pRate,
+              beltsRequired: pRate / beltThroughput,
+            });
+          }
+          return;
+        }
+
+        // Single column: clean vertical entry (with distinct side-load for partner item if present)
+        const primaryX = colXs[0];
+        let entryYBase = blockBottomY - 1;
         if (track.partnerItemId) {
           const mergeY = blockBottomY;
-          const lanes = { left: track.itemId, right: track.partnerItemId };
+          const pInput = stage.inputs.find((i) => i.itemId === track.partnerItemId && i.kind === 'item');
+          const pRate = pInput?.actualTotalPerSec ?? 0;
           if (!interiorBounds || mergeY + 1 < interiorBounds.maxY) {
             grid.placeOrMergeBelt(primaryX, mergeY, beltName, 0, lanes, stage.id);
             entryYBase = mergeY;
@@ -1518,6 +1998,8 @@ export function synthesizeFactoryLayout(
                 entryDir: 0,
                 itemId: track.partnerItemId,
                 kind: 'item',
+                ratePerSec: pRate,
+                beltsRequired: pRate / beltThroughput,
               });
             } else {
               inAnchors.push({
@@ -1525,6 +2007,8 @@ export function synthesizeFactoryLayout(
                 y: entryYBase,
                 itemId: track.partnerItemId,
                 kind: 'item',
+                ratePerSec: pRate,
+                beltsRequired: pRate / beltThroughput,
               });
             }
           }
@@ -1535,50 +2019,140 @@ export function synthesizeFactoryLayout(
           y: entryYBase,
           itemId: track.itemId,
           kind: 'item',
+          ratePerSec: totalTrackRate,
+          beltsRequired: totalTrackBelts,
         });
       };
 
       inputTracks.forEach((track, tIdx) => {
-        wireTrackUnifiedAnchor(tIdx, track, colTrackXs.get(tIdx) ?? []);
+        wireTrackUnifiedAnchor(track, colTrackXs.get(tIdx) ?? []);
       });
 
-      // Unify multi-column solid outputs into 1 stage output anchor when !useTwinColumns && cols > 1
-      if (!useTwinColumns && mainSolidOutput && colOutXs.length > 0) {
-        if (colOutXs.length > 1) {
-          const topBusY = blockTopY - 1;
-          const targetX = colOutXs[0];
-          const lanes = { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId };
-          if (!interiorBounds || topBusY >= interiorBounds.minY) {
-            grid.placeOrMergeBelt(targetX, topBusY, beltName, 0, lanes, stage.id);
-            for (let ci = 1; ci < colOutXs.length; ci++) {
-              for (let x = colOutXs[ci]; x > targetX; x--) {
-                if (x === colOutXs[ci] && !grid.getAt(x, topBusY)) {
-                  grid.placeOrMergeBelt(x, topBusY, beltName, 12, lanes, stage.id);
-                } else if (!grid.getAt(x, topBusY)) {
-                  grid.placeOrMergeBelt(x, topBusY, beltName, 12, lanes, stage.id);
-                }
+      // Unify multi-column solid outputs into capacity-bounded <= 1.0-belt Northbound collector groups
+      const wireGroupOutputTree = (
+        groupOutXs: number[],
+        lanes: { left: string; right: string }
+      ): { x: number; y: number } => {
+        if (groupOutXs.length === 1) {
+          return { x: groupOutXs[0], y: blockTopY };
+        }
+
+        const mergeSub = (subXs: number[]): { x: number; exitY: number; topY: number } | null => {
+          if (subXs.length === 1) {
+            return { x: subXs[0], exitY: blockTopY - 1, topY: blockTopY };
+          }
+          const mid = Math.floor(subXs.length / 2);
+          const leftRes = mergeSub(subXs.slice(0, mid));
+          const rightRes = mergeSub(subXs.slice(mid));
+          if (!leftRes || !rightRes) return null;
+
+          const baseTop = Math.min(leftRes.topY, rightRes.topY);
+          const busY = baseTop - 2;
+          const splitY = busY - 1;
+          if (splitY < minBusLimitY) return null;
+
+          const sx = findFreeSplitterX(leftRes.x, rightRes.x, splitY, busY);
+          if (sx === null) return null;
+
+          grid.place({
+            kind: 'splitter',
+            name: splitterName,
+            tileX: sx,
+            tileY: splitY,
+            width: 2,
+            height: 1,
+            direction: 0,
+            beltLanes: lanes,
+            stageId: stage.id,
+          });
+
+          // Left branch climbs up leftRes.x -> turns RIGHT along busY -> turns UP at (sx, busY)
+          layAdaptiveVerticalBelt(
+            grid,
+            leftRes.x,
+            busY + 1,
+            leftRes.exitY + 1,
+            beltName,
+            undergroundName,
+            lanes,
+            stage.id,
+            beltMaxJump
+          );
+          if (leftRes.x !== sx) {
+            grid.placeOrMergeBelt(leftRes.x, busY, beltName, 4, lanes, stage.id);
+            connectHorizontalBusArm(leftRes.x + 1, sx, busY, lanes);
+          }
+          grid.placeOrMergeBelt(sx, busY, beltName, 0, lanes, stage.id);
+
+          // Right branch climbs up rightRes.x -> turns LEFT along busY -> turns UP at (sx+1, busY)
+          layAdaptiveVerticalBelt(
+            grid,
+            rightRes.x,
+            busY + 1,
+            rightRes.exitY + 1,
+            beltName,
+            undergroundName,
+            lanes,
+            stage.id,
+            beltMaxJump
+          );
+          if (rightRes.x !== sx + 1) {
+            grid.placeOrMergeBelt(rightRes.x, busY, beltName, 12, lanes, stage.id);
+            connectHorizontalBusArm(rightRes.x - 1, sx + 1, busY, lanes);
+          }
+          grid.placeOrMergeBelt(sx + 1, busY, beltName, 0, lanes, stage.id);
+
+          return { x: sx, exitY: splitY - 1, topY: splitY };
+        };
+
+        const merged = mergeSub(groupOutXs);
+        if (merged) {
+          return { x: merged.x, y: merged.topY };
+        }
+
+        // Tight-grid fallback: inline merge along blockTopY - 1
+        const topBusY = blockTopY - 1;
+        const targetX = groupOutXs[0];
+        if (!interiorBounds || topBusY >= interiorBounds.minY) {
+          grid.placeOrMergeBelt(targetX, topBusY, beltName, 0, lanes, stage.id);
+          for (let ci = 1; ci < groupOutXs.length; ci++) {
+            for (let x = groupOutXs[ci]; x > targetX; x--) {
+              if (!grid.getAt(x, topBusY)) {
+                grid.placeOrMergeBelt(x, topBusY, beltName, 12, lanes, stage.id);
               }
             }
-            outAnchors.push({
-              x: targetX,
-              y: topBusY,
-              itemId: mainSolidOutput.itemId,
-              kind: 'item',
-            });
-          } else {
-            outAnchors.push({
-              x: targetX,
-              y: blockTopY,
-              itemId: mainSolidOutput.itemId,
-              kind: 'item',
-            });
           }
-        } else {
+          return { x: targetX, y: topBusY };
+        }
+        return { x: targetX, y: blockTopY };
+      };
+
+      if (!useTwinColumns && mainSolidOutput && colOutXs.length > 0) {
+        const totalOutRate = mainSolidOutput.actualTotalPerSec;
+        const totalOutBelts = totalOutRate / beltThroughput;
+        const desiredOutGroups = Math.min(
+          colOutXs.length,
+          Math.max(1, Math.ceil(totalOutBelts - 1e-6))
+        );
+        const lanes = { left: mainSolidOutput.itemId, right: mainSolidOutput.itemId };
+
+        let outCursor = 0;
+        for (let g = 0; g < desiredOutGroups; g++) {
+          const remG = desiredOutGroups - g;
+          const remC = colOutXs.length - outCursor;
+          const take = Math.ceil(remC / remG);
+          const sliceOutXs = colOutXs.slice(outCursor, outCursor + take);
+          outCursor += take;
+
+          const frac = sliceOutXs.length / colOutXs.length;
+          const res = wireGroupOutputTree(sliceOutXs, lanes);
           outAnchors.push({
-            x: colOutXs[0],
-            y: blockTopY,
+            x: res.x,
+            y: res.y,
             itemId: mainSolidOutput.itemId,
             kind: 'item',
+            ratePerSec: totalOutRate * frac,
+            beltsRequired: totalOutBelts * frac,
           });
         }
       }
@@ -1629,8 +2203,6 @@ export function synthesizeFactoryLayout(
         }
       }
 
-      // Single unified splitters handled inside wireTrackUnifiedAnchor above
-
       if (placedMachines > 0) {
         zones.push({
           stageId: stage.id,
@@ -1655,7 +2227,7 @@ export function synthesizeFactoryLayout(
       currentX += bp.blockW + blockGapX;
     }
 
-    currentBaseY -= shelf.maxH + layerGapY;
+    currentBaseY -= shelf.maxH + (shelfGaps[shelfIdx] ?? layerGapY);
   }
 
   // Helper helpers for stage anchor entry/exit tiles
@@ -1726,30 +2298,37 @@ export function synthesizeFactoryLayout(
   for (const edge of solveResult.edges) {
     if (edge.sourceStageId.startsWith('RAW:') || edge.targetStageId.startsWith('TARGET:')) continue;
     if (absorbedFeederIds.has(edge.sourceStageId)) continue;
-    const fromAnchors = stageOutputAnchors.get(edge.sourceStageId) ?? [];
-    const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-    const src = fromAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-    const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-    if (!src || !dst) continue;
+    const fromAnchors = (stageOutputAnchors.get(edge.sourceStageId) ?? []).filter(
+      (a) => a.itemId === edge.itemId && a.kind === edge.kind
+    );
+    const toAnchors = (stageInputAnchors.get(edge.targetStageId) ?? []).filter(
+      (a) => a.itemId === edge.itemId && a.kind === edge.kind
+    );
+    if (fromAnchors.length === 0 || toAnchors.length === 0) continue;
 
-    const gKey = `${edge.sourceStageId}:${edge.kind}:${edge.itemId}`;
-    const existing = interGroups.get(gKey);
-    if (existing) {
-      if (
-        !existing.targets.some(
-          (t) => t.dstAnchor.x === dst.x && t.dstAnchor.y === dst.y && t.dstAnchor.entryX === dst.entryX
-        )
-      ) {
-        existing.targets.push({ dstAnchor: dst });
+    const pairsCount = Math.max(fromAnchors.length, toAnchors.length);
+    for (let pi = 0; pi < pairsCount; pi++) {
+      const src = fromAnchors[pi % fromAnchors.length];
+      const dst = toAnchors[pi % toAnchors.length];
+      const gKey = `${edge.sourceStageId}:${edge.kind}:${edge.itemId}:${src.x},${src.y}`;
+      const existing = interGroups.get(gKey);
+      if (existing) {
+        if (
+          !existing.targets.some(
+            (t) => t.dstAnchor.x === dst.x && t.dstAnchor.y === dst.y && t.dstAnchor.entryX === dst.entryX
+          )
+        ) {
+          existing.targets.push({ dstAnchor: dst });
+        }
+      } else {
+        interGroups.set(gKey, {
+          sourceStageId: edge.sourceStageId,
+          itemId: edge.itemId,
+          kind: edge.kind,
+          srcAnchor: src,
+          targets: [{ dstAnchor: dst }],
+        });
       }
-    } else {
-      interGroups.set(gKey, {
-        sourceStageId: edge.sourceStageId,
-        itemId: edge.itemId,
-        kind: edge.kind,
-        srcAnchor: src,
-        targets: [{ dstAnchor: dst }],
-      });
     }
   }
 
@@ -1890,9 +2469,32 @@ export function synthesizeFactoryLayout(
   const consolidateByItem = Boolean(options.trainStation || inputSide !== 'distributed');
   let rawRequests: GroupedRawPortRequest[] = [];
 
+  const splitRawRequestByCapacity = (req: GroupedRawPortRequest): GroupedRawPortRequest[] => {
+    if (req.kind !== 'item' || req.beltsRequired <= 1.0 + 1e-4) {
+      return [req];
+    }
+    const nPorts = Math.max(2, Math.ceil(req.beltsRequired - 1e-6));
+    const perRate = req.ratePerSec / nPorts;
+    const perBelts = req.beltsRequired / nPorts;
+    const res: GroupedRawPortRequest[] = [];
+    for (let i = 0; i < nPorts; i++) {
+      res.push({
+        ...req,
+        key: `${req.key}:cap#${i}`,
+        ratePerSec: perRate,
+        beltsRequired: perBelts,
+        consumers: req.consumers.map((c) => ({
+          ...c,
+          ratePerSec: c.ratePerSec / nPorts,
+          beltsRequired: c.beltsRequired / nPorts,
+        })),
+      });
+    }
+    return res;
+  };
+
   if (consolidateByItem) {
-    // Consolidate consumers by (kind, itemId) so each raw material uses ceil(totalBelts)
-    // ports instead of duplicating overlapping wagon/bus ports per stage.
+    // Consolidate consumers by (kind, itemId) while preserving physical <= 1.0 belt limits per port
     const rawByItem = new Map<
       string,
       {
@@ -1906,37 +2508,48 @@ export function synthesizeFactoryLayout(
 
     for (const edge of solveResult.edges) {
       if (!edge.sourceStageId.startsWith('RAW:')) continue;
-      const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-      const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-      if (!dst) continue;
+      const toAnchors = (stageInputAnchors.get(edge.targetStageId) ?? []).filter(
+        (a) => a.itemId === edge.itemId && a.kind === edge.kind
+      );
+      if (toAnchors.length === 0) continue;
 
-      const iKey = `${edge.kind}:${edge.itemId}`;
-      const existing = rawByItem.get(iKey);
-      const consumer: RawConsumerEntry = {
-        anchor: dst,
-        ratePerSec: edge.actualRatePerSec,
-        beltsRequired: edge.beltsRequired,
-      };
-      if (existing) {
-        existing.totalRatePerSec += edge.actualRatePerSec;
-        existing.totalBelts += edge.beltsRequired;
-        const dup = existing.consumers.find(
-          (c) => c.anchor.x === dst.x && c.anchor.y === dst.y && c.anchor.entryX === dst.entryX
-        );
-        if (dup) {
-          dup.ratePerSec += edge.actualRatePerSec;
-          dup.beltsRequired += edge.beltsRequired;
+      const totalAnchorWeight = toAnchors.reduce((s, a) => s + (a.beltsRequired ?? 0), 0);
+      for (const dst of toAnchors) {
+        const share =
+          totalAnchorWeight > 1e-6 && dst.beltsRequired !== undefined
+            ? dst.beltsRequired / totalAnchorWeight
+            : 1 / toAnchors.length;
+        const shareRate = edge.actualRatePerSec * share;
+        const shareBelts = edge.beltsRequired * share;
+
+        const iKey = `${edge.kind}:${edge.itemId}`;
+        const existing = rawByItem.get(iKey);
+        const consumer: RawConsumerEntry = {
+          anchor: dst,
+          ratePerSec: shareRate,
+          beltsRequired: shareBelts,
+        };
+        if (existing) {
+          existing.totalRatePerSec += shareRate;
+          existing.totalBelts += shareBelts;
+          const dup = existing.consumers.find(
+            (c) => c.anchor.x === dst.x && c.anchor.y === dst.y && c.anchor.entryX === dst.entryX
+          );
+          if (dup) {
+            dup.ratePerSec += shareRate;
+            dup.beltsRequired += shareBelts;
+          } else {
+            existing.consumers.push(consumer);
+          }
         } else {
-          existing.consumers.push(consumer);
+          rawByItem.set(iKey, {
+            itemId: edge.itemId,
+            kind: edge.kind,
+            totalRatePerSec: shareRate,
+            totalBelts: shareBelts,
+            consumers: [consumer],
+          });
         }
-      } else {
-        rawByItem.set(iKey, {
-          itemId: edge.itemId,
-          kind: edge.kind,
-          totalRatePerSec: edge.actualRatePerSec,
-          totalBelts: edge.beltsRequired,
-          consumers: [consumer],
-        });
       }
     }
 
@@ -1950,15 +2563,23 @@ export function synthesizeFactoryLayout(
           : 1;
 
       const buckets: RawConsumerEntry[][] = Array.from({ length: numPorts }, () => []);
-      sortedConsumers.forEach((c, idx) => {
-        buckets[idx % numPorts].push(c);
-      });
+      const bucketBelts = new Array<number>(numPorts).fill(0);
+      // Greedy load-balanced bin packing so each port stays <= 1.0 belt whenever possible
+      const consumersByLoad = [...sortedConsumers].sort((a, b) => b.beltsRequired - a.beltsRequired);
+      for (const c of consumersByLoad) {
+        let bestBi = 0;
+        for (let bi = 1; bi < numPorts; bi++) {
+          if (bucketBelts[bi] < bucketBelts[bestBi]) bestBi = bi;
+        }
+        buckets[bestBi].push(c);
+        bucketBelts[bestBi] += c.beltsRequired;
+      }
 
       buckets.forEach((bucket, bIdx) => {
         if (bucket.length === 0) return;
         const rateSum = bucket.reduce((s, c) => s + c.ratePerSec, 0);
         const beltSum = bucket.reduce((s, c) => s + c.beltsRequired, 0);
-        rawRequests.push({
+        const baseReq: GroupedRawPortRequest = {
           key: numPorts === 1 ? iKey : `${iKey}#${bIdx}`,
           itemId: itemGroup.itemId,
           kind: itemGroup.kind,
@@ -1966,39 +2587,51 @@ export function synthesizeFactoryLayout(
           beltsRequired: beltSum,
           anchor: bucket[0].anchor,
           consumers: bucket,
-        });
+        };
+        rawRequests.push(...splitRawRequestByCapacity(baseReq));
       });
     }
   } else {
     const rawRequestByAnchor = new Map<string, GroupedRawPortRequest>();
     for (const edge of solveResult.edges) {
       if (!edge.sourceStageId.startsWith('RAW:')) continue;
-      const toAnchors = stageInputAnchors.get(edge.targetStageId) ?? [];
-      const dst = toAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-      if (!dst) continue;
+      const toAnchors = (stageInputAnchors.get(edge.targetStageId) ?? []).filter(
+        (a) => a.itemId === edge.itemId && a.kind === edge.kind
+      );
+      if (toAnchors.length === 0) continue;
 
-      const e = getAnchorEntry(dst);
-      const anchorKey = `${dst.kind}:${e.x},${e.y}`;
-      const existing = rawRequestByAnchor.get(anchorKey);
-      if (existing) {
-        if (existing.itemId !== edge.itemId && !existing.partnerItemId) {
-          existing.partnerItemId = edge.itemId;
+      const totalAnchorWeight = toAnchors.reduce((s, a) => s + (a.beltsRequired ?? 0), 0);
+      for (const dst of toAnchors) {
+        const share =
+          totalAnchorWeight > 1e-6 && dst.beltsRequired !== undefined
+            ? dst.beltsRequired / totalAnchorWeight
+            : 1 / toAnchors.length;
+        const shareRate = edge.actualRatePerSec * share;
+        const shareBelts = edge.beltsRequired * share;
+
+        const e = getAnchorEntry(dst);
+        const anchorKey = `${dst.kind}:${e.x},${e.y}`;
+        const existing = rawRequestByAnchor.get(anchorKey);
+        if (existing) {
+          if (existing.itemId !== edge.itemId && !existing.partnerItemId) {
+            existing.partnerItemId = edge.itemId;
+          }
+          existing.ratePerSec += shareRate;
+          existing.beltsRequired += shareBelts;
+        } else {
+          rawRequestByAnchor.set(anchorKey, {
+            key: anchorKey,
+            itemId: edge.itemId,
+            kind: edge.kind,
+            ratePerSec: shareRate,
+            beltsRequired: shareBelts,
+            anchor: dst,
+            consumers: [{ anchor: dst, ratePerSec: shareRate, beltsRequired: shareBelts }],
+          });
         }
-        existing.ratePerSec += edge.actualRatePerSec;
-        existing.beltsRequired += edge.beltsRequired;
-      } else {
-        rawRequestByAnchor.set(anchorKey, {
-          key: anchorKey,
-          itemId: edge.itemId,
-          kind: edge.kind,
-          ratePerSec: edge.actualRatePerSec,
-          beltsRequired: edge.beltsRequired,
-          anchor: dst,
-          consumers: [{ anchor: dst, ratePerSec: edge.actualRatePerSec, beltsRequired: edge.beltsRequired }],
-        });
       }
     }
-    rawRequests = Array.from(rawRequestByAnchor.values());
+    rawRequests = Array.from(rawRequestByAnchor.values()).flatMap(splitRawRequestByCapacity);
   }
 
   rawRequests.sort((a, b) => {
@@ -2011,8 +2644,15 @@ export function synthesizeFactoryLayout(
     const station = options.trainStation;
     let railNet = buildRailFlowNetwork(grid.entities);
 
-    // If no rail network exists in this layout yet, place a clean straight siding rail + locked train-stop
-    if (railNet.chains.length === 0) {
+    const stationCenter = { x: station.tileX + 1, y: station.tileY + 1 };
+    const stationNearRail =
+      railNet.chains.length > 0 &&
+      railNet.chains.some((ch) =>
+        ch.points.some((pt) => Math.hypot(pt.x - stationCenter.x, pt.y - stationCenter.y) <= 4.5)
+      );
+
+    // If no rail network exists near this station point yet, place a clean straight siding rail + custom train-stop
+    if (railNet.chains.length === 0 || !stationNearRail) {
       const horiz = station.direction === 4 || station.direction === 12;
       const stepX = station.direction === 4 ? -1 : station.direction === 12 ? 1 : 0;
       const stepY = station.direction === 0 ? 1 : station.direction === 8 ? -1 : 0;
@@ -2020,30 +2660,34 @@ export function synthesizeFactoryLayout(
       const stopRailOffsetY = station.direction === 4 ? -2 : station.direction === 12 ? 2 : 0;
       const totalTrackTiles = (1 + Math.max(1, station.wagonCount)) * 7 + 4;
 
-      grid.place({
-        kind: 'grid-obstacle',
-        name: 'train-stop',
-        tileX: station.tileX,
-        tileY: station.tileY,
-        width: 2,
-        height: 2,
-        direction: station.direction,
-        isGridFrame: true,
-      });
+      if (grid.canPlace(station.tileX, station.tileY, 2, 2)) {
+        grid.place({
+          kind: 'grid-obstacle',
+          name: 'train-stop',
+          tileX: station.tileX,
+          tileY: station.tileY,
+          width: 2,
+          height: 2,
+          direction: station.direction,
+          isGridFrame: false,
+        });
+      }
 
       for (let d = -2; d <= totalTrackTiles; d += 2) {
         const rx = station.tileX + stopRailOffsetX + stepX * d;
         const ry = station.tileY + stopRailOffsetY + stepY * d;
-        grid.place({
-          kind: 'grid-obstacle',
-          name: 'straight-rail',
-          tileX: rx,
-          tileY: ry,
-          width: 2,
-          height: 2,
-          direction: horiz ? 4 : 0,
-          isGridFrame: true,
-        });
+        if (grid.canPlace(rx, ry, 2, 2)) {
+          grid.place({
+            kind: 'grid-obstacle',
+            name: 'straight-rail',
+            tileX: rx,
+            tileY: ry,
+            width: 2,
+            height: 2,
+            direction: horiz ? 4 : 0,
+            isGridFrame: false,
+          });
+        }
       }
       railNet = buildRailFlowNetwork(grid.entities);
     }
@@ -2069,162 +2713,626 @@ export function synthesizeFactoryLayout(
     });
     const carPoses = computeTrainCarPosesOnNetwork(railNet, station, factoryCenter);
     const wagonPoses = carPoses.slice(1); // cargo wagons 1..N
+    const MAX_BELTS_PER_WAGON = 4;
 
-    // Count how many belt requests map to each wagon so we spread unloading ports cleanly along the 6-tile wagon length
-    const wagonReqCounts = new Map<number, number>();
-    const pickWagonForRequest = (req: GroupedRawPortRequest): number => {
-      if (wagonPoses.length === 0) return 0;
-      if (req.kind === 'item') {
-        const matchingIndices: number[] = [];
-        trainPlan.wagons.forEach((w, idx) => {
-          if (idx < wagonPoses.length && w.slices.some((s) => s.itemId === req.itemId)) {
-            matchingIndices.push(idx);
-          }
-        });
-        if (matchingIndices.length > 0) {
-          let bestIdx = matchingIndices[0];
-          let bestLoad = wagonReqCounts.get(bestIdx) ?? 0;
-          for (const wi of matchingIndices) {
-            const load = wagonReqCounts.get(wi) ?? 0;
-            if (load < bestLoad) {
-              bestLoad = load;
-              bestIdx = wi;
-            }
-          }
-          return bestIdx;
-        }
+    const getWagonOutDir = (pose: (typeof carPoses)[number]): Direction =>
+      Math.abs(pose.factoryNormalX) >= Math.abs(pose.factoryNormalY)
+        ? pose.factoryNormalX >= 0
+          ? 4
+          : 12
+        : pose.factoryNormalY >= 0
+          ? 8
+          : 0;
+
+    const portSideForDir = (d: Direction): 'south' | 'west' | 'north' | 'east' =>
+      d === 0 ? 'south' : d === 4 ? 'west' : d === 8 ? 'north' : 'east';
+
+    // Partition rawRequests by (kind, itemId)
+    const solidReqsByItem = new Map<string, GroupedRawPortRequest[]>();
+    const fluidReqs: GroupedRawPortRequest[] = [];
+    for (const req of rawRequests) {
+      if (req.kind === 'fluid') {
+        fluidReqs.push(req);
+      } else {
+        const list = solidReqsByItem.get(req.itemId) ?? [];
+        list.push(req);
+        solidReqsByItem.set(req.itemId, list);
       }
-      let bestIdx = req.kind === 'fluid' ? wagonPoses.length - 1 : 0;
-      let bestLoad = wagonReqCounts.get(bestIdx) ?? 0;
-      for (let wi = 0; wi < wagonPoses.length; wi++) {
-        const load = wagonReqCounts.get(wi) ?? 0;
-        if (load < bestLoad) {
-          bestLoad = load;
-          bestIdx = wi;
-        }
-      }
-      return bestIdx;
+    }
+
+    // Build per-wagon unloading allocation strictly capped at <= 4 belts per wagon,
+    // separating mixed-wagon items via filtered inserters onto dedicated non-mixed lanes.
+    interface WagonSliceUnloaderSpec {
+      wIdx: number;
+      itemId: string;
+      partnerItemId?: string;
+      isMixedWagon: boolean;
+      beltCount: number;
+      slotStart: number; // 0..5 along wagon length
+      slotEnd: number;   // inclusive 0..5
+    }
+
+    const wagonSpecsByItem = new Map<string, WagonSliceUnloaderSpec[]>();
+    const usedWagonSlots = new Map<number, number>(); // wagon index -> next free slot 0..5
+    const usedWagonBelts = new Map<number, number>(); // wagon index -> allocated belts <= 4
+
+    const addWagonSliceSpec = (spec: WagonSliceUnloaderSpec) => {
+      const list = wagonSpecsByItem.get(spec.itemId) ?? [];
+      list.push(spec);
+      wagonSpecsByItem.set(spec.itemId, list);
     };
 
-    const assignedSlots = rawRequests.map((req) => {
-      const wIdx = pickWagonForRequest(req);
-      const slotInWagon = wagonReqCounts.get(wIdx) ?? 0;
-      wagonReqCounts.set(wIdx, slotInWagon + 1);
-      return { req, wIdx, slotInWagon };
-    });
+    if (wagonPoses.length > 0) {
+      // Pass A: Honor trainPlan wagon slices first (mixed wagons partition 6 chest slots & <=4 belts)
+      for (let wIdx = 0; wIdx < wagonPoses.length; wIdx++) {
+        const wPlan = trainPlan.wagons[wIdx];
+        if (!wPlan || wPlan.slices.length === 0) continue;
+
+        // Filter slices to items actually present in solidReqsByItem
+        const activeSlices = wPlan.slices.filter((sl) => solidReqsByItem.has(sl.itemId));
+        if (activeSlices.length === 0) continue;
+
+        if (!wPlan.isMixed || activeSlices.length === 1) {
+          const itemId = activeSlices[0].itemId;
+          const totalReqBelts = solidReqsByItem.get(itemId)?.length ?? 1;
+          const wagonsWithItem = trainPlan.wagons.filter(
+            (w, idx) => idx < wagonPoses.length && w.slices.some((s) => s.itemId === itemId)
+          ).length;
+          const idealPerWagon = Math.ceil(totalReqBelts / Math.max(1, wagonsWithItem));
+          const beltCount = Math.max(1, Math.min(MAX_BELTS_PER_WAGON, idealPerWagon));
+          usedWagonBelts.set(wIdx, beltCount);
+          usedWagonSlots.set(wIdx, 6);
+          addWagonSliceSpec({
+            wIdx,
+            itemId,
+            isMixedWagon: wPlan.isMixed,
+            beltCount,
+            slotStart: 0,
+            slotEnd: 5,
+          });
+        } else {
+          // Mixed wagon: max 4 physical belts leaving wagon, partitioned cleanly across items
+          const sliceCount = activeSlices.length;
+          if (sliceCount <= MAX_BELTS_PER_WAGON) {
+            // Every item in this mixed wagon gets dedicated chest slots & dedicated non-mixed belt(s)
+            const beltWeights = activeSlices.map((sl) => {
+              const reqBelts = solidReqsByItem.get(sl.itemId)?.length ?? 1;
+              return Math.max(sl.slots, reqBelts * 4);
+            });
+            const beltCounts = activeSlices.map(() => 1);
+            let remBelts = MAX_BELTS_PER_WAGON - sliceCount;
+            while (remBelts > 0) {
+              let bestSi = 0;
+              let bestNeed = -1;
+              for (let si = 0; si < sliceCount; si++) {
+                const reqBelts = solidReqsByItem.get(activeSlices[si].itemId)?.length ?? 1;
+                if (beltCounts[si] >= reqBelts) continue;
+                const ratio = beltWeights[si] / beltCounts[si];
+                if (ratio > bestNeed) {
+                  bestNeed = ratio;
+                  bestSi = si;
+                }
+              }
+              if (bestNeed < 0) break;
+              beltCounts[bestSi]++;
+              remBelts--;
+            }
+
+            // Partition 6 chest positions proportionally across activeSlices
+            const chestCounts = activeSlices.map(() => 1);
+            let remChests = Math.max(0, 6 - sliceCount);
+            while (remChests > 0) {
+              let bestSi = 0;
+              let bestRatio = -1;
+              for (let si = 0; si < sliceCount; si++) {
+                const ratio = beltCounts[si] / chestCounts[si];
+                if (ratio > bestRatio) {
+                  bestRatio = ratio;
+                  bestSi = si;
+                }
+              }
+              chestCounts[bestSi]++;
+              remChests--;
+            }
+
+            let cursor = 0;
+            for (let si = 0; si < sliceCount && cursor < 6; si++) {
+              const takeChests = Math.min(chestCounts[si], 6 - cursor);
+              addWagonSliceSpec({
+                wIdx,
+                itemId: activeSlices[si].itemId,
+                isMixedWagon: true,
+                beltCount: beltCounts[si],
+                slotStart: cursor,
+                slotEnd: cursor + takeChests - 1,
+              });
+              cursor += takeChests;
+            }
+            usedWagonSlots.set(wIdx, cursor);
+            usedWagonBelts.set(wIdx, beltCounts.reduce((a, b) => a + b, 0));
+          } else {
+            // >4 distinct solid items packed into 1 mixed wagon: pair up to 4 dual-lane exit belts,
+            // keeping filtered inserters per item
+            const maxPairs = Math.min(MAX_BELTS_PER_WAGON, Math.ceil(sliceCount / 2));
+            let cursor = 0;
+            for (let pi = 0; pi < maxPairs && cursor < 6; pi++) {
+              const first = activeSlices[pi * 2];
+              const second = activeSlices[pi * 2 + 1];
+              addWagonSliceSpec({
+                wIdx,
+                itemId: first.itemId,
+                partnerItemId: second?.itemId,
+                isMixedWagon: true,
+                beltCount: 1,
+                slotStart: cursor,
+                slotEnd: cursor,
+              });
+              cursor++;
+            }
+            usedWagonSlots.set(wIdx, cursor);
+            usedWagonBelts.set(wIdx, maxPairs);
+          }
+        }
+      }
+
+      // Safety pass: ensure every solid item in solidReqsByItem has at least 1 wagon spec
+      for (const [itemId, reqs] of solidReqsByItem.entries()) {
+        if (wagonSpecsByItem.has(itemId)) continue;
+        let bestW = 0;
+        let minBelts = Infinity;
+        for (let wi = 0; wi < wagonPoses.length; wi++) {
+          const b = usedWagonBelts.get(wi) ?? 0;
+          if (b < minBelts) {
+            minBelts = b;
+            bestW = wi;
+          }
+        }
+        const freeSlot = usedWagonSlots.get(bestW) ?? 0;
+        const availBelts = Math.max(1, MAX_BELTS_PER_WAGON - (usedWagonBelts.get(bestW) ?? 0));
+        const takeBelts = Math.min(availBelts, reqs.length);
+        const slotEnd = freeSlot === 0 ? 5 : Math.min(5, freeSlot + takeBelts - 1);
+        addWagonSliceSpec({
+          wIdx: bestW,
+          itemId,
+          isMixedWagon: (usedWagonBelts.get(bestW) ?? 0) > 0,
+          beltCount: takeBelts,
+          slotStart: Math.min(5, freeSlot),
+          slotEnd,
+        });
+        usedWagonSlots.set(bestW, Math.min(6, slotEnd + 1));
+        usedWagonBelts.set(bestW, Math.min(MAX_BELTS_PER_WAGON, (usedWagonBelts.get(bestW) ?? 0) + takeBelts));
+      }
+    }
 
     interface WagonUnloadPlacement {
       req: GroupedRawPortRequest;
       headX: number;
       headY: number;
-      insX: number;
-      insY: number;
       outDir: Direction;
       portSide: 'south' | 'west' | 'north' | 'east';
     }
 
     const unloadPlacements: WagonUnloadPlacement[] = [];
+    const fluidReservedCells = new Set<string>();
 
-    for (const { req, wIdx, slotInWagon } of assignedSlots) {
-      const pose = wagonPoses[wIdx] ?? carPoses[0];
-      const totalOnWagon = Math.max(1, wagonReqCounts.get(wIdx) ?? 1);
-      const longOffset =
-        totalOnWagon === 1
-          ? 0
-          : -2 + (4 * slotInWagon) / Math.max(1, totalOnWagon - 1);
-
-      const outDir: Direction =
-        Math.abs(pose.factoryNormalX) >= Math.abs(pose.factoryNormalY)
-          ? pose.factoryNormalX >= 0
-            ? 4
-            : 12
-          : pose.factoryNormalY >= 0
-            ? 8
-            : 0;
+    // Helper to stamp a physical chest-buffered wagon unloading manifold for one slice on a wagon
+    // returning <= beltCount exit heads (each guaranteed <= 4 per wagon total).
+    const stampWagonSliceUnloader = (
+      spec: WagonSliceUnloaderSpec
+    ): Array<{ x: number; y: number; dir: Direction }> => {
+      const pose = wagonPoses[spec.wIdx] ?? carPoses[0];
+      const outDir = getWagonOutDir(pose);
       const { dx, dy } = dirDelta(outDir);
-      const portSide: 'south' | 'west' | 'north' | 'east' =
-        outDir === 0
-          ? 'south'
-          : outDir === 4
-            ? 'west'
-            : outDir === 8
-              ? 'north'
-              : 'east';
+      const fwdAxisX = Math.abs(pose.forwardX) >= Math.abs(pose.forwardY) ? Math.sign(pose.forwardX) || 1 : 0;
+      const fwdAxisY = Math.abs(pose.forwardY) > Math.abs(pose.forwardX) ? Math.sign(pose.forwardY) || 1 : 0;
 
-      let headX = Math.round(pose.centerX + pose.forwardX * longOffset + dx * 2.5 - 0.5);
-      let headY = Math.round(pose.centerY + pose.forwardY * longOffset + dy * 2.5 - 0.5);
-      let foundHead = false;
+      // Align wagon's 6 slots (0..5 -> offset -2.5 .. +2.5 along forward axis) cleanly to integer tiles
+      const slotCoord = (slotIdx: number, distFromRail: number): { x: number; y: number } => {
+        const longOff = slotIdx - 2.5;
+        return {
+          x: Math.round(pose.centerX + fwdAxisX * longOff + dx * distFromRail - 0.5),
+          y: Math.round(pose.centerY + fwdAxisY * longOff + dy * distFromRail - 0.5),
+        };
+      };
 
-      const isReserved = (x: number, y: number) =>
-        unloadPlacements.some(
-          (u) => (u.headX === x && u.headY === y) || (u.insX === x && u.insY === y)
-        ) || reservedAprons.has(`${x},${y}`);
+      const slotCount = Math.max(1, spec.slotEnd - spec.slotStart + 1);
+      const itemColor = index.resourcesById.get(spec.itemId)?.color ?? '#94A3B8';
+      const lanes = {
+        left: spec.itemId,
+        right: spec.partnerItemId ?? spec.itemId,
+      };
+      const insItems = spec.partnerItemId ? [spec.itemId, spec.partnerItemId] : [spec.itemId];
 
-      for (let dist = 2.5; dist <= 8.5 && !foundHead; dist += 1) {
-        for (const shift of [0, 1, -1, 2, -2]) {
-          const tx = Math.round(
-            pose.centerX + pose.forwardX * (longOffset + shift) + dx * dist - 0.5
+      // Find first clear manifold base distance starting at 1.5 tiles from rail centerline
+      // (row 0 = wagon->chest inserter, row 1 = steel-chest, row 2 = chest->belt inserter, row 3 = collector belt)
+      let baseDist = -1;
+      for (const tryDist of [1.5, 2.5, 3.5]) {
+        let allClear = true;
+        for (let s = spec.slotStart; s <= spec.slotEnd; s++) {
+          for (let r = 0; r < 4; r++) {
+            const c = slotCoord(s, tryDist + r);
+            if (grid.getAt(c.x, c.y) || reservedAprons.has(`${c.x},${c.y}`)) {
+              allClear = false;
+              break;
+            }
+          }
+          if (!allClear) break;
+        }
+        if (allClear) {
+          baseDist = tryDist;
+          break;
+        }
+      }
+
+      if (baseDist < 0) {
+        // Tight-frame fallback: single filtered inserter + belt head per required belt
+        const fallbackHeads: Array<{ x: number; y: number; dir: Direction }> = [];
+        for (let bi = 0; bi < spec.beltCount; bi++) {
+          const s = Math.min(
+            spec.slotEnd,
+            spec.slotStart + Math.floor((bi * slotCount) / Math.max(1, spec.beltCount))
           );
-          const ty = Math.round(
-            pose.centerY + pose.forwardY * (longOffset + shift) + dy * dist - 0.5
+          let placed = false;
+          for (let d = 2.5; d <= 7.5 && !placed; d += 1) {
+            const headC = slotCoord(s, d);
+            const insC = slotCoord(s, d - 1);
+            if (
+              !grid.getAt(headC.x, headC.y) &&
+              !reservedAprons.has(`${headC.x},${headC.y}`) &&
+              grid.canPlace(insC.x, insC.y, 1, 1)
+            ) {
+              grid.place({
+                kind: 'inserter',
+                name: inserterName,
+                tileX: insC.x,
+                tileY: insC.y,
+                width: 1,
+                height: 1,
+                direction: outDir,
+                inserterReach: 1,
+                inserterItems: insItems,
+                isFiltered: spec.isMixedWagon || undefined,
+              });
+              grid.placeOrMergeBelt(headC.x, headC.y, beltName, outDir, lanes);
+              fallbackHeads.push({ x: headC.x, y: headC.y, dir: outDir });
+              placed = true;
+            }
+          }
+        }
+        return fallbackHeads;
+      }
+
+      // Place full Factorio chest-buffer unloader: Inserter -> Steel Chest -> Inserter -> Collector Belts
+      for (let s = spec.slotStart; s <= spec.slotEnd; s++) {
+        const pIns1 = slotCoord(s, baseDist);
+        const pChest = slotCoord(s, baseDist + 1);
+        const pIns2 = slotCoord(s, baseDist + 2);
+        const pBelt = slotCoord(s, baseDist + 3);
+
+        grid.place({
+          kind: 'inserter',
+          name: inserterName,
+          tileX: pIns1.x,
+          tileY: pIns1.y,
+          width: 1,
+          height: 1,
+          direction: outDir,
+          inserterReach: 1,
+          inserterItems: insItems,
+          isFiltered: spec.isMixedWagon || undefined,
+        });
+        grid.place({
+          kind: 'grid-obstacle',
+          name: 'steel-chest',
+          tileX: pChest.x,
+          tileY: pChest.y,
+          width: 1,
+          height: 1,
+          direction: 0,
+          chestFilterItem: spec.itemId,
+          accentColor: itemColor,
+        });
+        grid.place({
+          kind: 'inserter',
+          name: inserterName,
+          tileX: pIns2.x,
+          tileY: pIns2.y,
+          width: 1,
+          height: 1,
+          direction: outDir,
+          inserterReach: 1,
+          inserterItems: insItems,
+          isFiltered: spec.isMixedWagon || undefined,
+        });
+        grid.placeOrMergeBelt(pBelt.x, pBelt.y, beltName, outDir, lanes);
+      }
+
+      // Merge/funnel `slotCount` chest belts down to `spec.beltCount <= 4` clean parallel belts!
+      const outBeltCount = Math.min(MAX_BELTS_PER_WAGON, spec.beltCount);
+
+      if (slotCount === 6 && outBeltCount === 4) {
+        // Iconic 6-chest -> 4-belt balanced wagon collector (slots 1,2,3,4 exit!)
+        const r4 = baseDist + 4;
+        const r5 = baseDist + 5;
+        let canFitMerger = true;
+        for (let s = 0; s <= 5 && canFitMerger; s++) {
+          for (const rr of [r4, r5]) {
+            const c = slotCoord(s, rr);
+            if (grid.getAt(c.x, c.y) || reservedAprons.has(`${c.x},${c.y}`)) {
+              canFitMerger = false;
+              break;
+            }
+          }
+        }
+        if (canFitMerger) {
+          const rightTurn = ((outDir + 4) % 16) as Direction;
+          const leftTurn = ((outDir + 12) % 16) as Direction;
+          // Determine whether slot+1 moves along +right or -right of outDir
+          const c0 = slotCoord(0, r4);
+          const c1 = slotCoord(1, r4);
+          const stepRightX = c1.x - c0.x;
+          const stepRightY = c1.y - c0.y;
+          const rightVec = dirDelta(rightTurn);
+          const slotIncreasesRight = stepRightX * rightVec.dx + stepRightY * rightVec.dy > 0;
+          const dirTowardHigherSlot = slotIncreasesRight ? rightTurn : leftTurn;
+          const dirTowardLowerSlot = slotIncreasesRight ? leftTurn : rightTurn;
+
+          // Row baseDist+4: outer slots 0 and 5 turn inward into 1 and 4; inner 1..4 go straight into splitters
+          const p0 = slotCoord(0, r4);
+          const p1 = slotCoord(1, r4);
+          const p2 = slotCoord(2, r4);
+          const p3 = slotCoord(3, r4);
+          const p4 = slotCoord(4, r4);
+          const p5 = slotCoord(5, r4);
+          grid.placeOrMergeBelt(p0.x, p0.y, beltName, dirTowardHigherSlot, lanes);
+          grid.placeOrMergeBelt(p1.x, p1.y, beltName, outDir, lanes);
+          grid.placeOrMergeBelt(p2.x, p2.y, beltName, outDir, lanes);
+          grid.placeOrMergeBelt(p3.x, p3.y, beltName, outDir, lanes);
+          grid.placeOrMergeBelt(p4.x, p4.y, beltName, outDir, lanes);
+          grid.placeOrMergeBelt(p5.x, p5.y, beltName, dirTowardLowerSlot, lanes);
+
+          // Row baseDist+5: place Splitter(1,2) and Splitter(3,4)
+          const q1 = slotCoord(1, r5);
+          const q2 = slotCoord(2, r5);
+          const q3 = slotCoord(3, r5);
+          const q4 = slotCoord(4, r5);
+          const horizSp = outDir === 0 || outDir === 8;
+          grid.place({
+            kind: 'splitter',
+            name: splitterName,
+            tileX: Math.min(q1.x, q2.x),
+            tileY: Math.min(q1.y, q2.y),
+            width: horizSp ? 2 : 1,
+            height: horizSp ? 1 : 2,
+            direction: outDir,
+            beltLanes: lanes,
+          });
+          grid.place({
+            kind: 'splitter',
+            name: splitterName,
+            tileX: Math.min(q3.x, q4.x),
+            tileY: Math.min(q3.y, q4.y),
+            width: horizSp ? 2 : 1,
+            height: horizSp ? 1 : 2,
+            direction: outDir,
+            beltLanes: lanes,
+          });
+
+          // Row baseDist+6: 4 clean exit belts directly ahead of splitters
+          const r6 = baseDist + 6;
+          return [1, 2, 3, 4].map((s) => {
+            const ec = slotCoord(s, r6);
+            if (!grid.getAt(ec.x, ec.y)) {
+              grid.placeOrMergeBelt(ec.x, ec.y, beltName, outDir, lanes);
+            }
+            return { x: ec.x, y: ec.y, dir: outDir };
+          });
+        }
+      }
+
+      // General merge from `slotCount` chests to `outBeltCount` exit belts cleanly inside [slotStart..slotEnd]
+      const exitHeads: Array<{ x: number; y: number; dir: Direction }> = [];
+      const rightTurn = ((outDir + 4) % 16) as Direction;
+      const leftTurn = ((outDir + 12) % 16) as Direction;
+      const cA = slotCoord(spec.slotStart, baseDist + 4);
+      const cB = slotCoord(spec.slotStart + 1, baseDist + 4);
+      const rightVec = dirDelta(rightTurn);
+      const slotIncreasesRight = (cB.x - cA.x) * rightVec.dx + (cB.y - cA.y) * rightVec.dy > 0;
+      const dirInc = slotIncreasesRight ? rightTurn : leftTurn;
+      const dirDec = slotIncreasesRight ? leftTurn : rightTurn;
+
+      for (let bi = 0; bi < outBeltCount; bi++) {
+        const subStart = spec.slotStart + Math.floor((bi * slotCount) / outBeltCount);
+        const subEnd = spec.slotStart + Math.floor(((bi + 1) * slotCount) / outBeltCount) - 1;
+        const targetSlot = Math.floor((subStart + subEnd) / 2);
+
+        const targetR4 = slotCoord(targetSlot, baseDist + 4);
+        const canMergeR4 = !grid.getAt(targetR4.x, targetR4.y) && !reservedAprons.has(`${targetR4.x},${targetR4.y}`);
+        if (canMergeR4 && subEnd > subStart) {
+          grid.placeOrMergeBelt(targetR4.x, targetR4.y, beltName, outDir, lanes);
+          for (let s = subStart; s < targetSlot; s++) {
+            const p = slotCoord(s, baseDist + 4);
+            if (!grid.getAt(p.x, p.y)) grid.placeOrMergeBelt(p.x, p.y, beltName, dirInc, lanes);
+          }
+          for (let s = subEnd; s > targetSlot; s--) {
+            const p = slotCoord(s, baseDist + 4);
+            if (!grid.getAt(p.x, p.y)) grid.placeOrMergeBelt(p.x, p.y, beltName, dirDec, lanes);
+          }
+          exitHeads.push({ x: targetR4.x, y: targetR4.y, dir: outDir });
+        } else {
+          const p = slotCoord(targetSlot, baseDist + 3);
+          exitHeads.push({ x: p.x, y: p.y, dir: outDir });
+        }
+      }
+
+      return exitHeads;
+    };
+
+    // Place wagon unloaders & per-item N->M Input Belt Balancers
+    for (const [itemId, reqs] of solidReqsByItem.entries()) {
+      const specs = wagonSpecsByItem.get(itemId) ?? [];
+      const wagonHeads: Array<{ x: number; y: number; dir: Direction; partnerItemId?: string }> = [];
+
+      for (const spec of specs) {
+        const heads = stampWagonSliceUnloader(spec);
+        for (const h of heads) {
+          wagonHeads.push({ ...h, partnerItemId: spec.partnerItemId });
+        }
+      }
+
+      if (wagonHeads.length === 0) continue;
+
+      // Determine primary direction & balanced staging area when >= 2 belts exist for this item
+      const primaryOutDir = wagonHeads[0].dir;
+      let finalHeads: Array<{ x: number; y: number; dir: Direction }> = wagonHeads.map((h) => ({
+        x: h.x,
+        y: h.y,
+        dir: h.dir,
+      }));
+
+      // Only place shared input balancer when all belts for this item stay pure (not dual-lane partnered)
+      // and >= 2 belts are present
+      const hasPartnerMixedBelt = wagonHeads.some((h) => Boolean(h.partnerItemId));
+      const sameDirHeads = wagonHeads.filter((h) => h.dir === primaryOutDir);
+
+      if (!hasPartnerMixedBelt && sameDirHeads.length >= 2) {
+        const lanes = { left: itemId, right: itemId };
+        const nIn = sameDirHeads.length;
+        const { dx: fdx, dy: fdy } = dirDelta(primaryOutDir);
+        const rightVec = dirDelta(((primaryOutDir + 4) % 16) as Direction);
+
+        // Sort heads left-to-right across the flow axis
+        const sortedHeads = [...sameDirHeads].sort(
+          (a, b) => a.x * rightVec.dx + a.y * rightVec.dy - (b.x * rightVec.dx + b.y * rightVec.dy)
+        );
+        const minProjAlong = Math.min(...sortedHeads.map((h) => h.x * rightVec.dx + h.y * rightVec.dy));
+        const maxProjAlong = Math.max(...sortedHeads.map((h) => h.x * rightVec.dx + h.y * rightVec.dy));
+        const midProjAlong = Math.round((minProjAlong + maxProjAlong) / 2);
+        const maxFwdProj = Math.max(...sortedHeads.map((h) => h.x * fdx + h.y * fdy));
+
+        // Target balanced width: 1 merged output if consumer only requires 1 belt,
+        // otherwise full N->M balancer matching max(nIn, reqs.length)
+        const targetOutCount = reqs.length === 1 ? 1 : Math.min(8, Math.max(2, nIn, reqs.length));
+        const balLanes = Math.min(8, Math.max(2, nIn, targetOutCount));
+        const balStartAlong = midProjAlong - Math.floor(balLanes / 2);
+
+        // Try placing the N->M balancer 3..5 tiles forward of the wagon collector heads
+        for (const extraFwd of [3, 4, 2, 5]) {
+          const originFwd = maxFwdProj + extraFwd;
+          // Compute world origin (u=0, v=0) of balancer
+          const originX = Math.round(balStartAlong * rightVec.dx + originFwd * fdx);
+          const originY = Math.round(balStartAlong * rightVec.dy + originFwd * fdy);
+
+          const balRes = placeBeltBalancer(
+            grid,
+            originX,
+            originY,
+            balLanes,
+            primaryOutDir,
+            beltName,
+            undergroundName,
+            splitterName,
+            lanes,
+            undefined,
+            reservedAprons,
+            targetOutCount
           );
-          const ix = tx - dx;
-          const iy = ty - dy;
-          const inserterOk =
-            req.kind !== 'item' || (grid.canPlace(ix, iy, 1, 1) && !isReserved(ix, iy));
-          if (!grid.getAt(tx, ty) && !isReserved(tx, ty) && inserterOk) {
-            headX = tx;
-            headY = ty;
-            foundHead = true;
+
+          if (balRes) {
+            // Connect each wagon head -> balancer input port
+            const balBounds = {
+              minX: Math.min(...sortedHeads.map((h) => h.x), originX) - 10,
+              maxX: Math.max(...sortedHeads.map((h) => h.x), originX) + 10,
+              minY: Math.min(...sortedHeads.map((h) => h.y), originY) - 10,
+              maxY: Math.max(...sortedHeads.map((h) => h.y), originY) + 10,
+            };
+            const headReq = { itemId, kind: 'item' as const };
+            const allInSet = new Set<string>(balRes.inputs.map((p) => `${p.x},${p.y}`));
+
+            sortedHeads.forEach((wh, wi) => {
+              const targetPort = balRes.inputs[wi % balRes.inputs.length];
+              const startStepX = wh.x + fdx;
+              const startStepY = wh.y + fdy;
+              const blockedExceptTarget = new Set<string>(allInSet);
+              blockedExceptTarget.delete(`${targetPort.x},${targetPort.y}`);
+
+              const goalX = targetPort.x - fdx;
+              const goalY = targetPort.y - fdy;
+
+              if (
+                !grid.getAt(startStepX, startStepY) &&
+                !grid.getAt(goalX, goalY) &&
+                !routeExternalFeederPath(
+                  grid,
+                  { x: startStepX, y: startStepY, dir: primaryOutDir },
+                  { x: goalX, y: goalY, dir: primaryOutDir },
+                  headReq,
+                  beltName,
+                  undergroundName,
+                  balBounds,
+                  beltMaxJump,
+                  { reservedAprons, blockedCells: blockedExceptTarget, maxExpansions: 25000 }
+                )
+              ) {
+                // Direct inline connection fallback if already aligned
+                if (wh.x === targetPort.x || wh.y === targetPort.y) {
+                  grid.placeOrMergeBelt(goalX, goalY, beltName, primaryOutDir, lanes);
+                }
+              }
+            });
+
+            finalHeads = balRes.outputs;
             break;
           }
         }
       }
 
-      if (!foundHead) {
-        for (let dist = 2.5; dist <= 8.5 && !foundHead; dist += 1) {
-          for (const shift of [0, 1, -1, 2, -2]) {
-            const tx = Math.round(
-              pose.centerX + pose.forwardX * (longOffset + shift) + dx * dist - 0.5
-            );
-            const ty = Math.round(
-              pose.centerY + pose.forwardY * (longOffset + shift) + dy * dist - 0.5
-            );
-            if (!grid.getAt(tx, ty) && !isReserved(tx, ty)) {
-              headX = tx;
-              headY = ty;
-              foundHead = true;
-              break;
-            }
+      // Map balanced output heads to this item's downstream consumer requests (1-to-1 or round-robin)
+      reqs.forEach((req, rIdx) => {
+        const head = finalHeads[rIdx % finalHeads.length];
+        unloadPlacements.push({
+          req,
+          headX: head.x,
+          headY: head.y,
+          outDir: head.dir,
+          portSide: portSideForDir(head.dir),
+        });
+      });
+    }
+
+    // Handle Fluid Requests (pump / pipe connections to last wagon)
+    for (const req of fluidReqs) {
+      const fWagonIdx = Math.max(0, wagonPoses.length - 1);
+      const pose = wagonPoses[fWagonIdx] ?? carPoses[0];
+      const outDir = getWagonOutDir(pose);
+      const { dx, dy } = dirDelta(outDir);
+      let headX = Math.round(pose.centerX + dx * 2.5 - 0.5);
+      let headY = Math.round(pose.centerY + dy * 2.5 - 0.5);
+      let found = false;
+      for (let dist = 2.5; dist <= 8.5 && !found; dist += 1) {
+        for (const shift of [0, 1, -1, 2, -2]) {
+          const tx = Math.round(pose.centerX + pose.forwardX * shift + dx * dist - 0.5);
+          const ty = Math.round(pose.centerY + pose.forwardY * shift + dy * dist - 0.5);
+          if (!grid.getAt(tx, ty) && !fluidReservedCells.has(`${tx},${ty}`) && !reservedAprons.has(`${tx},${ty}`)) {
+            headX = tx;
+            headY = ty;
+            fluidReservedCells.add(`${tx},${ty}`);
+            found = true;
+            break;
           }
         }
       }
-
-      const insX = headX - dx;
-      const insY = headY - dy;
-
-      if (req.kind === 'item' && grid.canPlace(insX, insY, 1, 1)) {
-        grid.place({
-          kind: 'inserter',
-          name: inserterName,
-          tileX: insX,
-          tileY: insY,
-          width: 1,
-          height: 1,
-          direction: outDir,
-          inserterReach: 1,
-          inserterItems: req.partnerItemId
-            ? [req.itemId, req.partnerItemId]
-            : [req.itemId],
-        });
-      }
-
-      unloadPlacements.push({ req, headX, headY, insX, insY, outDir, portSide });
+      unloadPlacements.push({
+        req,
+        headX,
+        headY,
+        outDir,
+        portSide: portSideForDir(outDir),
+      });
     }
 
-    // Reserve ALL unloading heads in a Set (instead of pre-placing on grid) so
-    // earlier belts never trample other heads while each head can still jump
-    // underground immediately at tile 0 if adjacent space is crowded!
+    // Reserve ALL unloading heads in a Set so earlier belts never trample other heads while
+    // each head can still jump underground immediately at tile 0 if adjacent space is crowded.
     const allHeadKeys = new Set<string>(unloadPlacements.map((u) => `${u.headX},${u.headY}`));
 
     let rMinX = interiorBounds ? interiorBounds.minX : preBounds.minX - 16;
@@ -2232,10 +3340,10 @@ export function synthesizeFactoryLayout(
     let rMinY = interiorBounds ? interiorBounds.minY : preBounds.minY - 14;
     let rMaxY = interiorBounds ? interiorBounds.maxY - 1 : preBounds.maxY + 14;
     for (const u of unloadPlacements) {
-      rMinX = Math.min(rMinX, u.headX - 12);
-      rMaxX = Math.max(rMaxX, u.headX + 12);
-      rMinY = Math.min(rMinY, u.headY - 12);
-      rMaxY = Math.max(rMaxY, u.headY + 12);
+      rMinX = Math.min(rMinX, u.headX - 14);
+      rMaxX = Math.max(rMaxX, u.headX + 14);
+      rMinY = Math.min(rMinY, u.headY - 14);
+      rMaxY = Math.max(rMaxY, u.headY + 14);
     }
     const trainRoutingBounds = { minX: rMinX, maxX: rMaxX, minY: rMinY, maxY: rMaxY };
 
@@ -2268,9 +3376,14 @@ export function synthesizeFactoryLayout(
       const primaryGoal = getAnchorEntry(orderedConsumers[0].anchor);
       reservedAprons.delete(`${primaryGoal.x},${primaryGoal.y}`);
 
+      const { dx: fdx, dy: fdy } = dirDelta(u.outDir);
+      const startTile = grid.getAt(u.headX, u.headY)
+        ? { x: u.headX + fdx, y: u.headY + fdy }
+        : { x: u.headX, y: u.headY };
+
       const routed = routeExternalFeederPath(
         grid,
-        { x: u.headX, y: u.headY, dir: u.outDir },
+        { x: startTile.x, y: startTile.y, dir: u.outDir },
         primaryGoal,
         u.req,
         beltName,
@@ -2286,7 +3399,6 @@ export function synthesizeFactoryLayout(
       );
 
       if (!routed) {
-        // Retry once with expanded corridor bounds around factory perimeter + higher search budget
         const wideTrainBounds = {
           minX: trainRoutingBounds.minX - 8,
           maxX: trainRoutingBounds.maxX + 8,
@@ -2295,7 +3407,7 @@ export function synthesizeFactoryLayout(
         };
         const retried = routeExternalFeederPath(
           grid,
-          { x: u.headX, y: u.headY, dir: u.outDir },
+          { x: startTile.x, y: startTile.y, dir: u.outDir },
           primaryGoal,
           u.req,
           beltName,
@@ -2310,7 +3422,7 @@ export function synthesizeFactoryLayout(
           }
         );
         if (!retried) {
-          placeFeederTile(grid, u.headX, u.headY, u.req, beltName, u.outDir);
+          placeFeederTile(grid, startTile.x, startTile.y, u.req, beltName, u.outDir);
         }
       }
 
@@ -2351,10 +3463,23 @@ export function synthesizeFactoryLayout(
       });
     }
   } else if (inputSide === 'distributed') {
+    const occupiedDistributedAnchors = new Set<string>();
     for (const req of rawRequests) {
       const entry = getAnchorEntry(req.anchor);
-      const baseAnchorX = entry.x;
-      const baseAnchorY = entry.y - 1;
+      let baseAnchorX = entry.x;
+      let baseAnchorY = entry.y - 1;
+      const anchorSlotKey = `${baseAnchorX},${baseAnchorY}`;
+      if (occupiedDistributedAnchors.has(anchorSlotKey)) {
+        // Place adjacent parallel port beside overflowed anchor without overlapping existing stub
+        for (const dxTry of [1, -1, 2, -2, 3, -3]) {
+          if (!grid.getAt(entry.x + dxTry, baseAnchorY + 1) && !occupiedDistributedAnchors.has(`${entry.x + dxTry},${baseAnchorY}`)) {
+            baseAnchorX = entry.x + dxTry;
+            break;
+          }
+        }
+      }
+      occupiedDistributedAnchors.add(`${baseAnchorX},${baseAnchorY}`);
+
       const stubLen = interiorBounds ? 2 : 3;
       let actualTipY = baseAnchorY;
       for (let dy = 1; dy <= stubLen; dy++) {
@@ -2610,74 +3735,226 @@ export function synthesizeFactoryLayout(
     }
   }
 
-  // 6. Final Output Belt/Pipe Stubs + Output Port Markers
+  // 6. Final Output Belt/Pipe Stubs + Multi-Belt Output Balancers + Capacity-Bounded Output Port Markers (<= 1.0 est. each)
   const emittedOutputPorts = new Set<string>();
   const currentPreOutBounds = computeLayoutStats(
     grid.entities.filter((e) => !e.isGridFrame)
   ).bounds;
+
+  interface RawOutLaneSpec {
+    itemId: string;
+    kind: 'item' | 'fluid';
+    startX: number;
+    startY: number;
+    ratePerSec: number;
+    beltsRequired: number;
+  }
+  const outLanesByItem = new Map<string, RawOutLaneSpec[]>();
+
   for (const edge of solveResult.edges) {
     if (!edge.targetStageId.startsWith('TARGET:')) continue;
-    const fromAnchors = stageOutputAnchors.get(edge.sourceStageId) ?? [];
-    const src = fromAnchors.find((a) => a.itemId === edge.itemId && a.kind === edge.kind);
-    if (!src) continue;
-    const outKey = `${edge.kind}:${src.x},${src.y}:${edge.itemId}`;
-    if (emittedOutputPorts.has(outKey)) continue;
-    emittedOutputPorts.add(outKey);
+    const matchingSrcs = (stageOutputAnchors.get(edge.sourceStageId) ?? []).filter(
+      (a) => a.itemId === edge.itemId && a.kind === edge.kind
+    );
+    if (matchingSrcs.length === 0) continue;
 
-    let tipY = interiorBounds ? Math.max(interiorBounds.minY, src.y - 2) : src.y - 3;
-    if (inputSide !== 'distributed') {
-      const alignedExitY = interiorBounds
-        ? Math.max(interiorBounds.minY, currentPreOutBounds.minY - 3)
-        : currentPreOutBounds.minY - 3;
-      if (alignedExitY < tipY) {
-        let canReachStraight = true;
-        for (let y = src.y - 1; y >= alignedExitY; y--) {
-          if (!grid.canPlace(src.x, y, 1, 1)) {
-            canReachStraight = false;
-            break;
+    const totalSrcWeight = matchingSrcs.reduce((s, a) => s + (a.beltsRequired ?? 0), 0);
+    matchingSrcs.forEach((src) => {
+      const share =
+        totalSrcWeight > 1e-6 && src.beltsRequired !== undefined
+          ? src.beltsRequired / totalSrcWeight
+          : 1 / matchingSrcs.length;
+      const srcRate = edge.actualRatePerSec * share;
+      const srcBelts = edge.beltsRequired * share;
+      const subCount =
+        edge.kind === 'item' && srcBelts > 1.0 + 1e-4
+          ? Math.max(2, Math.ceil(srcBelts - 1e-6))
+          : 1;
+
+      for (let si = 0; si < subCount; si++) {
+        let portX = src.x;
+        const portStartY = src.y;
+        if (si > 0) {
+          for (const dxTry of [1, -1, 2, -2, 3, -3]) {
+            if (!grid.getAt(src.x + dxTry, src.y - 1)) {
+              portX = src.x + dxTry;
+              break;
+            }
           }
         }
-        if (canReachStraight) {
-          tipY = alignedExitY;
+        const key = `${edge.kind}:${edge.itemId}`;
+        const list = outLanesByItem.get(key) ?? [];
+        list.push({
+          itemId: edge.itemId,
+          kind: edge.kind,
+          startX: portX,
+          startY: portStartY,
+          ratePerSec: srcRate / subCount,
+          beltsRequired: srcBelts / subCount,
+        });
+        outLanesByItem.set(key, list);
+      }
+    });
+  }
+
+  for (const [, outLanes] of outLanesByItem.entries()) {
+    const first = outLanes[0];
+    if (first.kind === 'item' && outLanes.length >= 2) {
+      // Multi-belt output balancer aligned cleanly North of the stage outputs
+      const sortedOut = [...outLanes].sort((a, b) => a.startX - b.startX);
+      const nOut = sortedOut.length;
+      const avgX = Math.round(sortedOut.reduce((s, l) => s + l.startX, 0) / nOut);
+      const topLaneY = Math.min(...sortedOut.map((l) => l.startY));
+      const balDepth = nOut <= 2 ? 3 : nOut <= 3 ? 7 : 10;
+      const minAllowY = interiorBounds ? interiorBounds.minY + balDepth + 1 : -Infinity;
+      const idealStartY = Math.min(currentPreOutBounds.minY - 2, topLaneY - 3);
+      const lanes = { left: first.itemId, right: first.itemId };
+      const balStartX = interiorBounds
+        ? Math.max(interiorBounds.minX + 1, Math.min(interiorBounds.maxX - nOut - 1, avgX - Math.floor(nOut / 2)))
+        : avgX - Math.floor(nOut / 2);
+
+      let placedBalancer = false;
+      for (const tryY of [idealStartY, idealStartY - 1, idealStartY - 2]) {
+        if (tryY < minAllowY) continue;
+        const balRes = placeBeltBalancer(
+          grid,
+          balStartX,
+          tryY,
+          nOut,
+          0,
+          beltName,
+          undergroundName,
+          splitterName,
+          lanes,
+          undefined,
+          reservedAprons
+        );
+        if (balRes) {
+          const outRouteBounds = interiorBounds
+            ? {
+                minX: interiorBounds.minX,
+                maxX: interiorBounds.maxX - 1,
+                minY: tryY,
+                maxY: Math.max(...sortedOut.map((l) => l.startY)) + 1,
+              }
+            : {
+                minX: Math.min(balStartX, sortedOut[0].startX) - 6,
+                maxX: Math.max(balStartX + nOut, sortedOut[nOut - 1].startX) + 6,
+                minY: tryY,
+                maxY: Math.max(...sortedOut.map((l) => l.startY)) + 1,
+              };
+          const allBalIns = new Set<string>(balRes.inputs.map((p) => `${p.x},${p.y}`));
+
+          sortedOut.forEach((lane, li) => {
+            const targetIn = balRes.inputs[li];
+            const blocked = new Set<string>(allBalIns);
+            blocked.delete(`${targetIn.x},${targetIn.y}`);
+            const entryX = lane.startX;
+            const entryY = lane.startY - 1;
+            const goalX = targetIn.x;
+            const goalY = targetIn.y + 1;
+            if (!grid.getAt(entryX, entryY) && !grid.getAt(goalX, goalY)) {
+              routeExternalFeederPath(
+                grid,
+                { x: entryX, y: entryY, dir: 0 },
+                { x: goalX, y: goalY, dir: 0 },
+                { itemId: first.itemId, kind: 'item' },
+                beltName,
+                undergroundName,
+                outRouteBounds,
+                beltMaxJump,
+                { reservedAprons, blockedCells: blocked, maxExpansions: 25000 }
+              );
+            }
+          });
+
+          const totalOutRate = sortedOut.reduce((s, l) => s + l.ratePerSec, 0);
+          const totalOutBelts = sortedOut.reduce((s, l) => s + l.beltsRequired, 0);
+          balRes.outputs.forEach((op, oi) => {
+            const outKey = `item:${op.x},${op.y}:${first.itemId}:${oi}`;
+            if (emittedOutputPorts.has(outKey)) return;
+            emittedOutputPorts.add(outKey);
+            ports.push({
+              id: `OUT:${outKey}`,
+              directionType: 'output',
+              itemId: first.itemId,
+              kind: 'item',
+              tileX: op.x,
+              tileY: op.y,
+              ratePerSec: totalOutRate / balRes.outputs.length,
+              beltsRequired: totalOutBelts / balRes.outputs.length,
+              side: 'north',
+            });
+          });
+          placedBalancer = true;
+          break;
         }
       }
+
+      if (placedBalancer) continue;
     }
 
-    let placedTipY = src.y;
-    for (let y = src.y - 1; y >= tipY; y--) {
-      if (interiorBounds && y < interiorBounds.minY) break;
-      if (edge.kind === 'item') {
-        if (grid.placeOrMergeBelt(src.x, y, beltName, 0, {
-          left: edge.itemId,
-          right: edge.itemId,
-        })) {
+    // Standard single-belt (or tight-frame fallback) Northbound output stubs
+    outLanes.forEach((lane, si) => {
+      const outKey = `${lane.kind}:${lane.startX},${lane.startY}:${lane.itemId}:${si}`;
+      if (emittedOutputPorts.has(outKey)) return;
+      emittedOutputPorts.add(outKey);
+
+      let tipY = interiorBounds ? Math.max(interiorBounds.minY, lane.startY - 2) : lane.startY - 3;
+      if (inputSide !== 'distributed') {
+        const alignedExitY = interiorBounds
+          ? Math.max(interiorBounds.minY, currentPreOutBounds.minY - 3)
+          : currentPreOutBounds.minY - 3;
+        if (alignedExitY < tipY) {
+          let canReachStraight = true;
+          for (let y = lane.startY - 1; y >= alignedExitY; y--) {
+            if (!grid.canPlace(lane.startX, y, 1, 1)) {
+              canReachStraight = false;
+              break;
+            }
+          }
+          if (canReachStraight) {
+            tipY = alignedExitY;
+          }
+        }
+      }
+
+      let placedTipY = lane.startY;
+      for (let y = lane.startY - 1; y >= tipY; y--) {
+        if (interiorBounds && y < interiorBounds.minY) break;
+        if (lane.kind === 'item') {
+          if (grid.placeOrMergeBelt(lane.startX, y, beltName, 0, {
+            left: lane.itemId,
+            right: lane.itemId,
+          })) {
+            placedTipY = y;
+          }
+        } else if (grid.canPlace(lane.startX, y, 1, 1)) {
+          grid.place({
+            kind: 'pipe',
+            name: 'pipe',
+            tileX: lane.startX,
+            tileY: y,
+            width: 1,
+            height: 1,
+            direction: 0,
+            fluidId: lane.itemId,
+          });
           placedTipY = y;
         }
-      } else if (grid.canPlace(src.x, y, 1, 1)) {
-        grid.place({
-          kind: 'pipe',
-          name: 'pipe',
-          tileX: src.x,
-          tileY: y,
-          width: 1,
-          height: 1,
-          direction: 0,
-          fluidId: edge.itemId,
-        });
-        placedTipY = y;
       }
-    }
 
-    ports.push({
-      id: `OUT:${outKey}`,
-      directionType: 'output',
-      itemId: edge.itemId,
-      kind: edge.kind,
-      tileX: src.x,
-      tileY: placedTipY,
-      ratePerSec: edge.actualRatePerSec,
-      beltsRequired: edge.beltsRequired,
-      side: 'north',
+      ports.push({
+        id: `OUT:${outKey}`,
+        directionType: 'output',
+        itemId: lane.itemId,
+        kind: lane.kind,
+        tileX: lane.startX,
+        tileY: placedTipY,
+        ratePerSec: lane.ratePerSec,
+        beltsRequired: lane.beltsRequired,
+        side: 'north',
+      });
     });
   }
 
@@ -3180,7 +4457,7 @@ function branchFromTrunkAndRoute(
         prev!.kind === 'underground-belt' ||
         prev!.kind === 'splitter' ||
         prev!.kind === 'inserter') &&
-      prev!.direction === d;
+      (prev!.direction === d || prev!.kind === 'transport-belt');
     if (!hasInlinePrev) continue;
 
     const perps: Array<[number, number]> =
@@ -3238,7 +4515,7 @@ function branchFromTrunkAndRoute(
 
   cands.sort((a, b) => a.dist - b.dist);
 
-  for (const cand of cands.slice(0, 14)) {
+  for (const cand of cands.slice(0, 32)) {
     const blockedForRun = new Set<string>(blockedCells ?? []);
     blockedForRun.add(`${cand.beltEnt.tileX},${cand.beltEnt.tileY}`);
     blockedForRun.add(`${cand.nX},${cand.nY}`);
@@ -3321,6 +4598,259 @@ function branchFromTrunkAndRoute(
   }
 
   return false;
+}
+
+/**
+ * Stamps a canonical collision-free Factorio N×N throughput-balanced Belt Balancer
+ * (per https://wiki.factorio.com/Balancer_mechanics) oriented along `dir`:
+ *  - 2 lanes: 2×2 splitter (2×3)
+ *  - 3 lanes: 3-stage 3×3 cascade (3×7)
+ *  - 4 lanes: classic 4×4 throughput-unlimited balancer with underground crossover (4×10)
+ *  - 5+ lanes: parallel 4×4 / 2×2 banks + staggered inter-bank mixing stage (N×14)
+ */
+function placeBeltBalancer(
+  grid: OccupancyGrid,
+  originX: number,
+  originY: number,
+  laneCount: number,
+  dir: Direction,
+  beltName: string,
+  undergroundName: string,
+  splitterName: string,
+  lanes: { left?: string; right?: string },
+  stageId?: string,
+  reservedAprons?: Set<string>,
+  targetOutCount?: number
+): {
+  inputs: Array<{ x: number; y: number }>;
+  outputs: Array<{ x: number; y: number; dir: Direction }>;
+} | null {
+  if (laneCount < 2) return null;
+
+  const fwd = dirDelta(dir);
+  const rightDir = ((dir + 4) % 16) as Direction;
+  const leftDir = ((dir + 12) % 16) as Direction;
+  const rightVec = dirDelta(rightDir);
+
+  const toWorld = (u: number, v: number): { x: number; y: number } => ({
+    x: originX + u * rightVec.dx + v * fwd.dx,
+    y: originY + u * rightVec.dy + v * fwd.dy,
+  });
+
+  type BalancerTile =
+    | { kind: 'belt'; u: number; v: number; d: Direction }
+    | { kind: 'splitter'; u: number; v: number }
+    | { kind: 'ug-in'; u: number; v: number }
+    | { kind: 'ug-out'; u: number; v: number };
+
+  const ops: BalancerTile[] = [];
+
+  const emitBank = (uOff: number, vOff: number, width: number): number => {
+    if (width === 2) {
+      ops.push({ kind: 'belt', u: uOff, v: vOff, d: dir });
+      ops.push({ kind: 'belt', u: uOff + 1, v: vOff, d: dir });
+      ops.push({ kind: 'splitter', u: uOff, v: vOff + 1 });
+      ops.push({ kind: 'belt', u: uOff, v: vOff + 2, d: dir });
+      ops.push({ kind: 'belt', u: uOff + 1, v: vOff + 2, d: dir });
+      return 3;
+    }
+    if (width === 3) {
+      for (let u = 0; u < 3; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff, d: dir });
+      ops.push({ kind: 'splitter', u: uOff, v: vOff + 1 });
+      ops.push({ kind: 'belt', u: uOff + 2, v: vOff + 1, d: dir });
+      for (let u = 0; u < 3; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff + 2, d: dir });
+      ops.push({ kind: 'belt', u: uOff, v: vOff + 3, d: dir });
+      ops.push({ kind: 'splitter', u: uOff + 1, v: vOff + 3 });
+      for (let u = 0; u < 3; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff + 4, d: dir });
+      ops.push({ kind: 'splitter', u: uOff, v: vOff + 5 });
+      ops.push({ kind: 'belt', u: uOff + 2, v: vOff + 5, d: dir });
+      for (let u = 0; u < 3; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff + 6, d: dir });
+      return 7;
+    }
+    // Width === 4: classic 4×4 TU balancer (10 deep, underground jump = 4 <= 5)
+    for (let u = 0; u < 4; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff, d: dir });
+    ops.push({ kind: 'splitter', u: uOff, v: vOff + 1 });
+    ops.push({ kind: 'splitter', u: uOff + 2, v: vOff + 1 });
+    ops.push({ kind: 'belt', u: uOff, v: vOff + 2, d: dir });
+    ops.push({ kind: 'splitter', u: uOff + 1, v: vOff + 2 });
+    ops.push({ kind: 'belt', u: uOff + 3, v: vOff + 2, d: dir });
+    ops.push({ kind: 'belt', u: uOff, v: vOff + 3, d: dir });
+    ops.push({ kind: 'ug-in', u: uOff + 1, v: vOff + 3 });
+    ops.push({ kind: 'ug-in', u: uOff + 2, v: vOff + 3 });
+    ops.push({ kind: 'belt', u: uOff + 3, v: vOff + 3, d: dir });
+    ops.push({ kind: 'belt', u: uOff, v: vOff + 4, d: rightDir });
+    ops.push({ kind: 'belt', u: uOff + 1, v: vOff + 4, d: dir });
+    ops.push({ kind: 'belt', u: uOff + 2, v: vOff + 4, d: dir });
+    ops.push({ kind: 'belt', u: uOff + 3, v: vOff + 4, d: leftDir });
+    ops.push({ kind: 'splitter', u: uOff + 1, v: vOff + 5 });
+    ops.push({ kind: 'belt', u: uOff, v: vOff + 6, d: dir });
+    ops.push({ kind: 'belt', u: uOff + 1, v: vOff + 6, d: leftDir });
+    ops.push({ kind: 'belt', u: uOff + 2, v: vOff + 6, d: rightDir });
+    ops.push({ kind: 'belt', u: uOff + 3, v: vOff + 6, d: dir });
+    ops.push({ kind: 'belt', u: uOff, v: vOff + 7, d: dir });
+    ops.push({ kind: 'ug-out', u: uOff + 1, v: vOff + 7 });
+    ops.push({ kind: 'ug-out', u: uOff + 2, v: vOff + 7 });
+    ops.push({ kind: 'belt', u: uOff + 3, v: vOff + 7, d: dir });
+    ops.push({ kind: 'splitter', u: uOff, v: vOff + 8 });
+    ops.push({ kind: 'splitter', u: uOff + 2, v: vOff + 8 });
+    for (let u = 0; u < 4; u++) ops.push({ kind: 'belt', u: uOff + u, v: vOff + 9, d: dir });
+    return 10;
+  };
+
+  let totalDepth = 0;
+  let activeOutUs: number[] = [];
+
+  if (targetOutCount === 1 && laneCount === 2) {
+    // Compact 2->1 splitter balancer (leaves 1 single centered exit belt with zero dangling lane)
+    ops.push({ kind: 'belt', u: 0, v: 0, d: dir });
+    ops.push({ kind: 'belt', u: 1, v: 0, d: dir });
+    ops.push({ kind: 'splitter', u: 0, v: 1 });
+    ops.push({ kind: 'belt', u: 0, v: 2, d: dir });
+    totalDepth = 3;
+    activeOutUs = [0];
+  } else if (targetOutCount === 1 && laneCount === 3) {
+    // Compact 3->1 balanced splitter cascade
+    for (let u = 0; u < 3; u++) ops.push({ kind: 'belt', u, v: 0, d: dir });
+    ops.push({ kind: 'belt', u: 0, v: 1, d: dir });
+    ops.push({ kind: 'splitter', u: 1, v: 1 });
+    ops.push({ kind: 'belt', u: 0, v: 2, d: dir });
+    ops.push({ kind: 'belt', u: 1, v: 2, d: dir });
+    ops.push({ kind: 'splitter', u: 0, v: 3 });
+    ops.push({ kind: 'belt', u: 0, v: 4, d: dir });
+    totalDepth = 5;
+    activeOutUs = [0];
+  } else if (targetOutCount === 1 && laneCount === 4) {
+    // Compact 4->1 splitter tree
+    for (let u = 0; u < 4; u++) ops.push({ kind: 'belt', u, v: 0, d: dir });
+    ops.push({ kind: 'splitter', u: 0, v: 1 });
+    ops.push({ kind: 'splitter', u: 2, v: 1 });
+    ops.push({ kind: 'belt', u: 1, v: 2, d: dir });
+    ops.push({ kind: 'belt', u: 2, v: 2, d: dir });
+    ops.push({ kind: 'splitter', u: 1, v: 3 });
+    ops.push({ kind: 'belt', u: 1, v: 4, d: dir });
+    totalDepth = 5;
+    activeOutUs = [1];
+  } else if (laneCount <= 4) {
+    totalDepth = emitBank(0, 0, laneCount);
+    for (let u = 0; u < laneCount; u++) activeOutUs.push(u);
+  } else {
+    // Partition into <= 4-lane banks + cross-bank boundary splitter mixing rows
+    const banks: Array<{ uStart: number; width: number }> = [];
+    let rem = laneCount;
+    let cursor = 0;
+    while (rem > 0) {
+      const take = rem === 5 ? 3 : Math.min(4, rem);
+      banks.push({ uStart: cursor, width: take });
+      cursor += take;
+      rem -= take;
+    }
+    let maxBankDepth = 0;
+    for (const b of banks) {
+      const d = emitBank(b.uStart, 0, b.width);
+      if (d > maxBankDepth) maxBankDepth = d;
+    }
+    // Pad shorter banks up to maxBankDepth
+    for (const b of banks) {
+      const d = b.width === 2 ? 3 : b.width === 3 ? 7 : 10;
+      for (let v = d; v < maxBankDepth; v++) {
+        for (let u = 0; u < b.width; u++) {
+          ops.push({ kind: 'belt', u: b.uStart + u, v, d: dir });
+        }
+      }
+    }
+    // Cross-bank mixing rows: pair boundary lanes between adjacent banks, then re-balance inner lanes
+    const vCross = maxBankDepth;
+    const covered = new Set<number>();
+    for (let bi = 0; bi < banks.length - 1; bi++) {
+      const uMid = banks[bi].uStart + banks[bi].width - 1;
+      ops.push({ kind: 'splitter', u: uMid, v: vCross });
+      covered.add(uMid);
+      covered.add(uMid + 1);
+    }
+    for (let u = 0; u < laneCount; u++) {
+      if (!covered.has(u)) ops.push({ kind: 'belt', u, v: vCross, d: dir });
+    }
+    for (let u = 0; u < laneCount; u++) {
+      ops.push({ kind: 'belt', u, v: vCross + 1, d: dir });
+    }
+    // Secondary offset splitter row so edge lanes share across bank centers
+    const covered2 = new Set<number>();
+    for (let u = 1; u + 1 < laneCount; u += 2) {
+      ops.push({ kind: 'splitter', u, v: vCross + 2 });
+      covered2.add(u);
+      covered2.add(u + 1);
+    }
+    for (let u = 0; u < laneCount; u++) {
+      if (!covered2.has(u)) ops.push({ kind: 'belt', u, v: vCross + 2, d: dir });
+    }
+    for (let u = 0; u < laneCount; u++) {
+      ops.push({ kind: 'belt', u, v: vCross + 3, d: dir });
+    }
+    totalDepth = vCross + 4;
+    for (let u = 0; u < laneCount; u++) activeOutUs.push(u);
+  }
+
+  // Verify ALL tiles needed for the balancer are free & unobstructed
+  const checkTiles = new Set<string>();
+  for (const op of ops) {
+    const p1 = toWorld(op.u, op.v);
+    checkTiles.add(`${p1.x},${p1.y}`);
+    if (op.kind === 'splitter') {
+      const p2 = toWorld(op.u + 1, op.v);
+      checkTiles.add(`${p2.x},${p2.y}`);
+    }
+  }
+  for (const k of checkTiles) {
+    const [kx, ky] = k.split(',').map(Number);
+    if (grid.getAt(kx, ky) || reservedAprons?.has(k)) {
+      return null;
+    }
+  }
+
+  // Stamp all entities cleanly onto the grid
+  const horizSp = dir === 0 || dir === 8;
+  for (const op of ops) {
+    const p = toWorld(op.u, op.v);
+    if (op.kind === 'belt') {
+      grid.placeOrMergeBelt(p.x, p.y, beltName, op.d, lanes, stageId);
+    } else if (op.kind === 'ug-in' || op.kind === 'ug-out') {
+      grid.place({
+        kind: 'underground-belt',
+        name: undergroundName,
+        tileX: p.x,
+        tileY: p.y,
+        width: 1,
+        height: 1,
+        direction: dir,
+        undergroundType: op.kind === 'ug-in' ? 'input' : 'output',
+        beltLanes: lanes,
+        stageId,
+      });
+    } else {
+      const p2 = toWorld(op.u + 1, op.v);
+      grid.place({
+        kind: 'splitter',
+        name: splitterName,
+        tileX: Math.min(p.x, p2.x),
+        tileY: Math.min(p.y, p2.y),
+        width: horizSp ? 2 : 1,
+        height: horizSp ? 1 : 2,
+        direction: dir,
+        beltLanes: lanes,
+        stageId,
+      });
+    }
+  }
+
+  const inputs: Array<{ x: number; y: number }> = [];
+  const outputs: Array<{ x: number; y: number; dir: Direction }> = [];
+  for (let u = 0; u < laneCount; u++) {
+    inputs.push(toWorld(u, 0));
+  }
+  for (const u of activeOutUs) {
+    outputs.push({ ...toWorld(u, totalDepth - 1), dir });
+  }
+  return { inputs, outputs };
 }
 
 export function computeLayoutStats(

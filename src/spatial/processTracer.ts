@@ -263,6 +263,14 @@ export function traceMachineProcess(
                 highlighted.add(srcEnt.entityNumber);
                 upstreamMachineIds.add(srcEnt.entityNumber);
               }
+            } else if (srcEnt && srcEnt.kind === 'grid-obstacle' && srcEnt.name.includes('chest')) {
+              // Train unloading manifold: belt <- inserter <- steel-chest <- inserter <- cargo wagon
+              highlighted.add(ins.entityNumber);
+              highlighted.add(srcEnt.entityNumber);
+              const chestPickIns = insertersByDropTile.get(`${srcEnt.tileX},${srcEnt.tileY}`) ?? [];
+              for (const wi of chestPickIns) {
+                highlighted.add(wi.entityNumber);
+              }
             } else if (inputPortSet.has(pk) || !srcEnt || srcEnt.isGridFrame) {
               // Raw wagon unloading inserter or external chest inserter
               highlighted.add(ins.entityNumber);

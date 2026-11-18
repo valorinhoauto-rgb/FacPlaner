@@ -121,6 +121,10 @@ function getCandidateSpecsForEntity(ent: GridEntity): Array<{ dir: number; spec:
     const dirs = [1, 3, 5, 7, 9, 11, 13, 15];
     return dirs.map((d) => ({ dir: d, spec: getRailCurveSpec(ent.name, d) }));
   }
+  if (ent.name.includes('curved-rail')) {
+    const dirs = [0, 2, 4, 6, 8, 10, 12, 14];
+    return dirs.map((d) => ({ dir: d, spec: getRailCurveSpec(ent.name, d) }));
+  }
   if (ent.name.includes('half-diagonal')) {
     const dirs = [1, 3, 5, 7];
     return dirs.map((d) => ({ dir: d, spec: getRailCurveSpec(ent.name, d) }));
@@ -131,9 +135,19 @@ function getCandidateSpecsForEntity(ent: GridEntity): Array<{ dir: number; spec:
 function railFamilyKey(name: string): string {
   if (name.includes('curved-rail-a')) return 'ca';
   if (name.includes('curved-rail-b')) return 'cb';
+  if (name.includes('curved-rail')) return 'c1';
   if (name.includes('half-diagonal')) return 'hd';
   if (name.includes('rail-ramp')) return 'ramp';
   return 'sr';
+}
+
+function normalizeRawDirForFamily(name: string, rawDir: number): number {
+  const d = ((Math.round(rawDir) % 16) + 16) % 16;
+  if (name.includes('curved-rail-a')) return d & ~1;
+  if (name.includes('curved-rail-b')) return d % 2 === 1 ? d : (d + 1) % 16;
+  if (name.includes('curved-rail')) return d & ~1;
+  if (name.includes('half-diagonal')) return (d % 2 === 1 ? d : (d + 1) % 16) % 8;
+  return d;
 }
 
 function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
@@ -177,6 +191,52 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
     }
   });
 
+  // Pass 0 Pre-Lock: lock any unlocked curve/half-diagonal whose un-mutated Factorio blueprint
+  // orientation ALREADY achieves 2/2 crisp G1 continuity with distinct non-co-located neighbors
+  // (or straight-rail anchors). Corrupted segments (e.g. 0/2 or 1/2 wrong orientation) stay unlocked
+  // so the iterative solver auto-heals them while untouched valid junctions never deform.
+  const hasCrispInitialMatch = (i: number, ep: Point2D, outTan: Point2D): boolean => {
+    const myCellKey = cellGroupKeys[i];
+    for (let j = 0; j < resolved.length; j++) {
+      if (j === i || cellGroupKeys[j] === myCellKey) continue;
+      if (Math.hypot(resolved[j].cx - resolved[i].cx, resolved[j].cy - resolved[i].cy) > 18) continue;
+      const ip = initialPorts[j];
+      for (const pair of [
+        { p: ip.p0, t: ip.out0 },
+        { p: ip.p1, t: ip.out1 },
+      ]) {
+        const d = Math.hypot(ep.x - pair.p.x, ep.y - pair.p.y);
+        if (d > 0.14) continue;
+        const opposeDot = -(outTan.x * pair.t.x + outTan.y * pair.t.y);
+        if (opposeDot >= 0.988) return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < resolved.length; i++) {
+    if (locked.has(i)) continue;
+    const ip = initialPorts[i];
+    const m0 = hasCrispInitialMatch(i, ip.p0, ip.out0);
+    const m1 = hasCrispInitialMatch(i, ip.p1, ip.out1);
+    if (m0 && m1) {
+      locked.add(i);
+    } else if (m0 || m1) {
+      // Lock valid boundary/switch curves that already match crisply on one side
+      // unless an alternate direction achieves a strict 2/2 crisp match.
+      const seg = resolved[i];
+      const hasFullAlt = getCandidateSpecsForEntity(seg.entity).some((c) => {
+        const g = getSpecEndpointsAndTangents(seg.cx, seg.cy, c.spec);
+        return (
+          hasCrispInitialMatch(i, g.p0, { x: -g.t0.x, y: -g.t0.y }) &&
+          hasCrispInitialMatch(i, g.p1, g.t1)
+        );
+      });
+      if (!hasFullAlt) {
+        locked.add(i);
+      }
+    }
+  }
+
   // Precompute all candidate ports per segment for weak tie-breaking
   const allCandPorts: Array<Array<{ ep: Point2D; outTan: Point2D }>> = resolved.map((seg) => {
     const cands = getCandidateSpecsForEntity(seg.entity);
@@ -189,10 +249,10 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
     return ports;
   });
 
-  // Group unlocked indices by (center, rail-family)
+  // Group ALL indices (including locked anchors) by (center, rail-family) so
+  // getLockedConflictDirs always sees locked co-located curves in the same cell.
   const groupMap = new Map<string, number[]>();
   for (let i = 0; i < resolved.length; i++) {
-    if (locked.has(i)) continue;
     const key = cellGroupKeys[i];
     const list = groupMap.get(key) ?? [];
     list.push(i);
@@ -214,8 +274,10 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
 
     const evalSegCandidates = (i: number) => {
       const seg = resolved[i];
-      const rawDirRaw = seg.entity.rawDirection ?? seg.entity.direction ?? 0;
-      const rawDir = seg.entity.name.includes('half-diagonal') ? rawDirRaw % 8 : rawDirRaw;
+      const rawDir = normalizeRawDirForFamily(
+        seg.entity.name,
+        seg.entity.rawDirection ?? seg.entity.direction ?? 0
+      );
       const myCellKey = cellGroupKeys[i];
       const candidates = getCandidateSpecsForEntity(seg.entity);
 
@@ -224,23 +286,32 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
         const evalEndpoint = (
           ep: Point2D,
           tan: Point2D
-        ): { score: number; lockedHit: boolean; strongHit: boolean; weakHit: boolean } => {
+        ): { score: number; lockedHit: boolean; strongHit: boolean; crispHit: boolean; weakHit: boolean } => {
           let bestLockedScore = 0;
+          let lockedCrisp = false;
           for (const rp of refPorts) {
             if (rp.segIdx === i) continue;
             const d = Math.hypot(ep.x - rp.p.x, ep.y - rp.p.y);
-            if (d > 0.48) continue;
+            if (d > 0.32) continue;
             const opposeDot = -(tan.x * rp.t.x + tan.y * rp.t.y);
-            if (opposeDot < 0.94) continue;
-            const s = (1 - d / 0.48) * 10 + opposeDot * 12;
+            if (opposeDot < 0.972) continue;
+            if (d <= 0.14 && opposeDot >= 0.988) lockedCrisp = true;
+            const s = (1 - d / 0.32) * 10 + opposeDot * 12 + (lockedCrisp ? 2.5 : 0);
             if (s > bestLockedScore) bestLockedScore = s;
           }
           if (bestLockedScore > 0) {
-            return { score: bestLockedScore, lockedHit: true, strongHit: true, weakHit: false };
+            return {
+              score: bestLockedScore,
+              lockedHit: true,
+              strongHit: true,
+              crispHit: lockedCrisp,
+              weakHit: false,
+            };
           }
 
           // Check un-mutated initial neighbor ports (for Factorio-valid curves before neighbor locks)
           let rawNeighborScore = 0;
+          let neighborCrisp = false;
           for (let j = 0; j < resolved.length; j++) {
             if (j === i || locked.has(j) || cellGroupKeys[j] === myCellKey) continue;
             if (Math.hypot(resolved[j].cx - seg.cx, resolved[j].cy - seg.cy) > 18) continue;
@@ -250,15 +321,22 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
               { p: ip.p1, t: ip.out1 },
             ]) {
               const d = Math.hypot(ep.x - pair.p.x, ep.y - pair.p.y);
-              if (d > 0.48) continue;
+              if (d > 0.32) continue;
               const opposeDot = -(tan.x * pair.t.x + tan.y * pair.t.y);
-              if (opposeDot < 0.94) continue;
-              const s = 6.0 + (1 - d / 0.48) * 2;
+              if (opposeDot < 0.972) continue;
+              if (d <= 0.14 && opposeDot >= 0.988) neighborCrisp = true;
+              const s = 6.0 + (1 - d / 0.32) * 2 + (neighborCrisp ? 1.5 : 0);
               if (s > rawNeighborScore) rawNeighborScore = s;
             }
           }
           if (rawNeighborScore > 0) {
-            return { score: rawNeighborScore, lockedHit: false, strongHit: true, weakHit: false };
+            return {
+              score: rawNeighborScore,
+              lockedHit: false,
+              strongHit: true,
+              crispHit: neighborCrisp,
+              weakHit: false,
+            };
           }
 
           // Neighbor candidate ports (handles unlocked curved-rail neighbors whose rawDir wasn't exact)
@@ -268,35 +346,48 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
             if (Math.hypot(resolved[j].cx - seg.cx, resolved[j].cy - seg.cy) > 18) continue;
             for (const np of allCandPorts[j]) {
               const d = Math.hypot(ep.x - np.ep.x, ep.y - np.ep.y);
-              if (d > 0.48) continue;
+              if (d > 0.32) continue;
               const opposeDot = -(tan.x * np.outTan.x + tan.y * np.outTan.y);
-              if (opposeDot < 0.94) continue;
-              const s = 4.5 + (1 - d / 0.48) * 1.5;
+              if (opposeDot < 0.972) continue;
+              const s = 4.5 + (1 - d / 0.32) * 1.5;
               if (s > weakScore) weakScore = s;
             }
           }
-          return { score: weakScore, lockedHit: false, strongHit: false, weakHit: weakScore > 0 };
+          return {
+            score: weakScore,
+            lockedHit: false,
+            strongHit: false,
+            crispHit: false,
+            weakHit: weakScore > 0,
+          };
         };
 
         const e0 = evalEndpoint(geom.p0, { x: -geom.t0.x, y: -geom.t0.y });
         const e1 = evalEndpoint(geom.p1, geom.t1);
         const lockedMatches = (e0.lockedHit ? 1 : 0) + (e1.lockedHit ? 1 : 0);
         const strongMatches = (e0.strongHit ? 1 : 0) + (e1.strongHit ? 1 : 0);
+        const crispStrongMatches = (e0.crispHit ? 1 : 0) + (e1.crispHit ? 1 : 0);
         const weakMatches = (e0.weakHit ? 1 : 0) + (e1.weakHit ? 1 : 0);
-        // Full rawDir bonus ONLY when BOTH ends connect G1-smoothly; never let a 1/2 dead-end override a 2/2 match.
+        // Protect crisp 1/2 open boundary stubs from rotating while allowing 2/2 auto-heal
+        // to overpower any broken 0/2 or 1/2 orientation cleanly.
         const sameDirBonus =
           cand.dir === rawDir
-            ? strongMatches >= 2
-              ? 18.0
-              : strongMatches === 1 && weakMatches >= 1
-                ? 4.5
-                : 0.25
+            ? crispStrongMatches >= 2
+              ? 24.0
+              : strongMatches >= 2
+                ? 18.0
+                : crispStrongMatches === 1
+                  ? 10.0
+                  : strongMatches === 1 && weakMatches >= 1
+                    ? 5.0
+                    : 0.5
             : 0;
         const total =
           e0.score +
           e1.score +
           lockedMatches * 14 +
           strongMatches * 8 +
+          crispStrongMatches * 4 +
           weakMatches * 5 +
           sameDirBonus;
 
@@ -316,8 +407,10 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
       const blockedDirs = new Set<number>();
       for (const li of memberIndices) {
         if (!locked.has(li)) continue;
-        const lRaw0 = resolved[li].entity.rawDirection ?? resolved[li].entity.direction ?? 0;
-        const lRaw = resolved[li].entity.name.includes('half-diagonal') ? lRaw0 % 8 : lRaw0;
+        const lRaw = normalizeRawDirForFamily(
+          resolved[li].entity.name,
+          resolved[li].entity.rawDirection ?? resolved[li].entity.direction ?? 0
+        );
         if (lRaw === myRawDir) continue;
         const lCands = getCandidateSpecsForEntity(resolved[li].entity);
         const lMatch = lCands.find((c) => {
@@ -375,7 +468,7 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
       );
       const chosenIndices = new Array<number>(unlockedMembers.length).fill(0);
       let bestGroupScore = -Infinity;
-      let bestAssignment = [...chosenIndices];
+      let bestAssignment: number[] | null = null;
 
       const searchGroup = (mIdx: number, accScore: number) => {
         if (mIdx === unlockedMembers.length) {
@@ -387,7 +480,10 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
         }
         const candList = evalsPerMember[mIdx];
         const blockedDirs = blockedDirsPerMember[mIdx];
-        const limit = unlockedMembers.length > 2 ? Math.min(5, candList.length) : candList.length;
+        const limit =
+          unlockedMembers.length > 4
+            ? Math.min(5, candList.length)
+            : candList.length;
         for (let ci = 0; ci < limit; ci++) {
           const ev = candList[ci];
           let dirConflict = blockedDirs.has(ev.cand.dir);
@@ -409,8 +505,30 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
 
       searchGroup(0, 0);
 
+      // Greedy disjoint fallback so overlapping rails never collapse onto duplicate directions
+      if (!bestAssignment) {
+        bestAssignment = new Array<number>(unlockedMembers.length).fill(0);
+        const usedByRawDir = new Map<number, number>();
+        for (let mIdx = 0; mIdx < unlockedMembers.length; mIdx++) {
+          const candList = evalsPerMember[mIdx];
+          const blocked = blockedDirsPerMember[mIdx];
+          let pickedCi = 0;
+          for (let ci = 0; ci < candList.length; ci++) {
+            const ev = candList[ci];
+            if (blocked.has(ev.cand.dir)) continue;
+            const ownerRaw = usedByRawDir.get(ev.cand.dir);
+            if (ownerRaw === undefined || ownerRaw === ev.rawDir) {
+              pickedCi = ci;
+              usedByRawDir.set(ev.cand.dir, ev.rawDir);
+              break;
+            }
+          }
+          bestAssignment[mIdx] = pickedCi;
+        }
+      }
+
       unlockedMembers.forEach((segIdx, mIdx) => {
-        const best = evalsPerMember[mIdx][bestAssignment[mIdx]];
+        const best = evalsPerMember[mIdx][bestAssignment![mIdx]];
         if (!best) return;
         const seg = resolved[segIdx];
         if (best.strongMatches >= 1 || best.weakMatches >= 2 || pass >= 4) {
@@ -527,14 +645,18 @@ export function buildRailFlowNetwork(entities: GridEntity[]): RailFlowNetwork {
     addAdj(e.v1, idx);
   });
 
-  // Deduplicate exact parallel duplicate edges (e.g. stacked blueprint ghosts)
+  // Deduplicate exact stacked duplicate blueprint ghosts while preserving distinct crossing/overlapping curves
   const seenEdgePair = new Set<string>();
   const activeEdges: RawEdge[] = [];
   for (const e of edges) {
     const a = Math.min(e.v0, e.v1);
     const b = Math.max(e.v0, e.v1);
     const mid = e.pts[Math.floor(e.pts.length / 2)];
-    const key = `${a}:${b}:${Math.round(mid.x * 2)}:${Math.round(mid.y * 2)}`;
+    const pStart = e.pts[0];
+    const pNext = e.pts[Math.min(1, e.pts.length - 1)];
+    const tanX = Math.round((pNext.x - pStart.x) * 8);
+    const tanY = Math.round((pNext.y - pStart.y) * 8);
+    const key = `${a}:${b}:${e.pts.length}:${Math.round(mid.x * 4)}:${Math.round(mid.y * 4)}:${tanX}:${tanY}`;
     if (!seenEdgePair.has(key)) {
       seenEdgePair.add(key);
       activeEdges.push(e);

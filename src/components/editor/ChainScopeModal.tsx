@@ -4,7 +4,7 @@
  */
 
 import React, { useMemo } from 'react';
-import { ArrowRightFromLine, Check, Layers, TrainFront, X } from 'lucide-react';
+import { AlertTriangle, ArrowRightFromLine, Check, Layers, TrainFront, X } from 'lucide-react';
 import type { PackIndex } from '../../data/schema.ts';
 import {
   buildTargetChainTree,
@@ -13,7 +13,7 @@ import {
 } from '../../engine/chainInspector.ts';
 import type { PlanConfig, RateUnit, SolveResult } from '../../engine/types.ts';
 import { useI18n } from '../../i18n/I18nContext.tsx';
-import type { InputAlignmentSide } from '../../spatial/types.ts';
+import type { GridBounds, GridFitReport, InputAlignmentSide } from '../../spatial/types.ts';
 import { formatRate } from '../../state/projectsStore.ts';
 import { ResourceIcon } from '../common/ResourceIcon.tsx';
 
@@ -23,6 +23,9 @@ interface ChainScopeModalProps {
   solveResult: SolveResult;
   rateUnit: RateUnit;
   inputSide: InputAlignmentSide;
+  gridFitReport?: GridFitReport;
+  layoutBounds?: GridBounds;
+  compactionMode?: 'compact' | 'standard';
   onUpdateConfig: (updater: (prev: PlanConfig) => PlanConfig) => void;
   onChangeInputSide: (side: InputAlignmentSide) => void;
   onClose: () => void;
@@ -34,6 +37,9 @@ export const ChainScopeModal: React.FC<ChainScopeModalProps> = ({
   solveResult,
   rateUnit,
   inputSide,
+  gridFitReport,
+  layoutBounds,
+  compactionMode = 'compact',
   onUpdateConfig,
   onChangeInputSide,
   onClose,
@@ -49,6 +55,51 @@ export const ChainScopeModal: React.FC<ChainScopeModalProps> = ({
     () => solveResult.stages.reduce((acc, s) => acc + s.installedMachines, 0),
     [solveResult.stages]
   );
+
+  const areaWarning = useMemo(() => {
+    let rawMachineArea = 0;
+    for (const st of solveResult.stages) {
+      const m = index.machinesById.get(st.machineId);
+      const w = m?.tileSize.width ?? 3;
+      const h = m?.tileSize.height ?? 3;
+      rawMachineArea += st.installedMachines * w * h;
+    }
+    const estOverheadFactor = compactionMode === 'compact' ? 2.25 : 2.9;
+    const estRequiredArea = Math.round(rawMachineArea * estOverheadFactor);
+    const boundsArea = layoutBounds
+      ? Math.max(0, (layoutBounds.maxX - layoutBounds.minX) * (layoutBounds.maxY - layoutBounds.minY))
+      : 0;
+
+    if (gridFitReport?.hasGridFrame) {
+      const usefulArea = Math.max(1, gridFitReport.interiorWidth * gridFitReport.interiorHeight);
+      const estAreaUsed = Math.max(estRequiredArea, Math.round(gridFitReport.interiorUtilizationPct * 0.01 * usefulArea));
+      const estPct = Math.round((estAreaUsed / usefulArea) * 100);
+      const actualPct = Math.round(gridFitReport.interiorUtilizationPct);
+      const effectivePct = Math.max(estPct, actualPct);
+      const overflowed = !gridFitReport.fitsInsideFrame || gridFitReport.overflowMachines > 0;
+      if (effectivePct >= 80 || overflowed) {
+        return {
+          kind: 'grid' as const,
+          pct: Math.max(effectivePct, overflowed ? 100 : effectivePct),
+          estTiles: Math.max(estRequiredArea, Math.round((actualPct / 100) * usefulArea)),
+          maxTiles: usefulArea,
+          placed: gridFitReport.placedMachines,
+          requested: gridFitReport.requestedMachines,
+        };
+      }
+      return null;
+    }
+
+    const effectiveFreeArea = Math.max(estRequiredArea, Math.round(boundsArea * 0.72));
+    if (totalMachines >= 150 || effectiveFreeArea >= 3600) {
+      return {
+        kind: 'unrealistic' as const,
+        machines: totalMachines,
+        estTiles: Math.max(estRequiredArea, boundsArea),
+      };
+    }
+    return null;
+  }, [solveResult.stages, index.machinesById, compactionMode, layoutBounds, gridFitReport, totalMachines]);
 
   const activeOverrides = useMemo(
     () => new Set(config.rawResourceOverrides ?? []),
@@ -322,6 +373,36 @@ export const ChainScopeModal: React.FC<ChainScopeModalProps> = ({
               </div>
             )}
           </div>
+
+          {areaWarning && (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 px-3 py-2.5 rounded border border-amber-500/60 bg-amber-950/35 text-amber-200 text-xs"
+            >
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5 leading-snug">
+                <div className="font-semibold text-amber-300">
+                  {areaWarning.kind === 'grid'
+                    ? t.chain.gridAreaWarningTitle
+                    : t.chain.unrealisticSizeWarningTitle}
+                </div>
+                <div className="text-[11px] text-amber-100/90">
+                  {areaWarning.kind === 'grid'
+                    ? t.chain.gridAreaWarningExceeded(
+                        areaWarning.pct,
+                        areaWarning.estTiles,
+                        areaWarning.maxTiles,
+                        areaWarning.placed,
+                        areaWarning.requested
+                      )
+                    : t.chain.unrealisticSizeWarningDesc(
+                        areaWarning.machines,
+                        areaWarning.estTiles
+                      )}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
             <button

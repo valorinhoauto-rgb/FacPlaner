@@ -14,12 +14,15 @@ export interface FactorioBlueprintEntity {
   direction?: number;
   recipe?: string;
   type?: 'input' | 'output';
+  use_filters?: boolean;
+  filters?: Array<{ index: number; name: string }>;
   items?: Array<{
     id: { name: string } | string;
     items?: {
       in_inventory?: Array<{ inventory: number; stack: number }>;
     };
   }> | Record<string, number>;
+  [key: string]: unknown;
 }
 
 export interface FactorioBlueprintData {
@@ -62,9 +65,103 @@ export function buildBlueprintJson(
   label: string,
   description?: string
 ): FactorioBlueprintData {
-  const bpEntities: FactorioBlueprintEntity[] = entities.map((e, idx) => {
+  // Preserve original entity_number on imported grid frame entities so circuit/copper wires stay intact
+  const usedNumbers = new Set<number>();
+  const finalNumberByEntity = new Map<GridEntity, number>();
+  const oldToNewFrameNumber = new Map<number, number>();
+  let nextSeq = 1;
+
+  for (const e of entities) {
+    if (e.isGridFrame && e.preservedRawEntity) {
+      let assigned = e.entityNumber;
+      while (assigned < 1 || usedNumbers.has(assigned)) {
+        assigned = nextSeq++;
+      }
+      usedNumbers.add(assigned);
+      finalNumberByEntity.set(e, assigned);
+      if (typeof e.preservedRawEntity.entity_number === 'number') {
+        oldToNewFrameNumber.set(e.preservedRawEntity.entity_number, assigned);
+      }
+      if (assigned >= nextSeq) nextSeq = assigned + 1;
+    }
+  }
+
+  for (const e of entities) {
+    if (finalNumberByEntity.has(e)) continue;
+    while (usedNumbers.has(nextSeq)) nextSeq++;
+    usedNumbers.add(nextSeq);
+    finalNumberByEntity.set(e, nextSeq);
+    nextSeq++;
+  }
+
+  const remapWireList = (rawWires: unknown): unknown => {
+    if (!Array.isArray(rawWires)) return rawWires;
+    return rawWires.map((w) => {
+      if (Array.isArray(w) && w.length >= 4 && typeof w[0] === 'number' && typeof w[2] === 'number') {
+        return [
+          oldToNewFrameNumber.get(w[0]) ?? w[0],
+          w[1],
+          oldToNewFrameNumber.get(w[2]) ?? w[2],
+          w[3],
+          ...w.slice(4),
+        ];
+      }
+      return w;
+    });
+  };
+
+  const remapConnections = (rawConn: unknown): unknown => {
+    if (!rawConn || typeof rawConn !== 'object' || Array.isArray(rawConn)) return rawConn;
+    const out: Record<string, unknown> = {};
+    for (const [portKey, portVal] of Object.entries(rawConn as Record<string, unknown>)) {
+      if (portVal && typeof portVal === 'object' && !Array.isArray(portVal)) {
+        const portOut: Record<string, unknown> = {};
+        for (const [colorKey, links] of Object.entries(portVal as Record<string, unknown>)) {
+          if (Array.isArray(links)) {
+            portOut[colorKey] = links.map((lnk) => {
+              if (lnk && typeof lnk === 'object' && 'entity_id' in lnk) {
+                const eid = Number((lnk as { entity_id: number }).entity_id);
+                return {
+                  ...(lnk as Record<string, unknown>),
+                  entity_id: oldToNewFrameNumber.get(eid) ?? eid,
+                };
+              }
+              return lnk;
+            });
+          } else {
+            portOut[colorKey] = links;
+          }
+        }
+        out[portKey] = portOut;
+      } else {
+        out[portKey] = portVal;
+      }
+    }
+    return out;
+  };
+
+  const bpEntities: FactorioBlueprintEntity[] = entities.map((e) => {
+    const entityNumber = finalNumberByEntity.get(e) ?? e.entityNumber;
+
+    if (e.isGridFrame && e.preservedRawEntity) {
+      const cloned = structuredClone(e.preservedRawEntity) as FactorioBlueprintEntity;
+      cloned.entity_number = entityNumber;
+      if (cloned.wires !== undefined) {
+        cloned.wires = remapWireList(cloned.wires);
+      }
+      if (cloned.connections !== undefined) {
+        cloned.connections = remapConnections(cloned.connections);
+      }
+      if (Array.isArray(cloned.neighbours)) {
+        cloned.neighbours = cloned.neighbours.map((n) =>
+          typeof n === 'number' ? oldToNewFrameNumber.get(n) ?? n : n
+        );
+      }
+      return cloned;
+    }
+
     const entity: FactorioBlueprintEntity = {
-      entity_number: idx + 1,
+      entity_number: entityNumber,
       name: e.name,
       // Factorio blueprint positions are centered on the entity footprint (preserving sub-tile offsets)
       position: {
@@ -82,6 +179,13 @@ export function buildBlueprintJson(
     }
     if (e.kind === 'underground-belt' && e.undergroundType) {
       entity.type = e.undergroundType;
+    }
+    if (e.kind === 'inserter' && e.isFiltered && e.inserterItems && e.inserterItems.length > 0) {
+      entity.use_filters = true;
+      entity.filters = e.inserterItems.slice(0, 5).map((item, fIdx) => ({
+        index: fIdx + 1,
+        name: item,
+      }));
     }
     if (e.moduleIds && e.moduleIds.length > 0) {
       const grouped = new Map<string, number[]>();
@@ -287,11 +391,36 @@ function inferEntityKindAndSize(
     name.includes('crusher') ||
     name.includes('filtration') ||
     name.includes('electrolysis') ||
-    name.includes('condenser')
+    name.includes('condenser') ||
+    name.includes('greenhouse') ||
+    name.includes('bio-lab') ||
+    name.includes('matter-plant') ||
+    name.includes('matter-assembler') ||
+    name.includes('quantum-computer') ||
+    name.includes('research-server') ||
+    name.includes('air-purifier') ||
+    name.includes('kr-singularity-lab')
   ) {
-    const is5x5 = name.includes('refinery') || name.includes('foundry') || name.includes('cryogenic');
-    const is4x4 = name.includes('electromagnetic');
-    const s = is5x5 ? 5 : is4x4 ? 4 : 3;
+    const is8x8 = name.includes('singularity-lab');
+    const is7x7 =
+      name.includes('greenhouse') ||
+      name.includes('bio-lab') ||
+      name.includes('matter-plant') ||
+      name.includes('matter-assembler') ||
+      name.includes('crusher') ||
+      name.includes('filtration') ||
+      name.includes('kr-advanced-assembling') ||
+      name.includes('kr-advanced-chemical') ||
+      name.includes('kr-advanced-furnace');
+    const is6x6 = name.includes('quantum-computer');
+    const is5x5 =
+      name.includes('refinery') ||
+      name.includes('foundry') ||
+      name.includes('cryogenic') ||
+      name.includes('electrolysis') ||
+      name.includes('condenser');
+    const is4x4 = name.includes('electromagnetic') || name.includes('air-purifier');
+    const s = is8x8 ? 8 : is7x7 ? 7 : is6x6 ? 6 : is5x5 ? 5 : is4x4 ? 4 : 3;
     return { kind: 'machine', width: s, height: s };
   }
   return { kind: 'grid-obstacle', width: 1, height: 1 };
@@ -341,6 +470,16 @@ export function parseBlueprintToEntities(
       ? index.resourcesById.get(recipe.mainProductId)?.color
       : undefined;
 
+    const parsedFilters = Array.isArray(re.filters)
+      ? re.filters.map((f) => f?.name).filter((f): f is string => Boolean(f))
+      : [];
+    const isFiltered = Boolean(re.use_filters || parsedFilters.length > 0);
+
+    const preservedRawEntity = structuredClone(re) as Record<string, unknown>;
+    if (re.direction !== undefined && !isFactorio2) {
+      preservedRawEntity.direction = rawDirection;
+    }
+
     return {
       entityNumber: re.entity_number ?? idx + 1,
       kind,
@@ -357,7 +496,10 @@ export function parseBlueprintToEntities(
       moduleIds: moduleIds.length > 0 ? moduleIds : undefined,
       undergroundType: re.type,
       inserterReach: re.name.includes('long') ? 2 : kind === 'inserter' ? 1 : undefined,
+      inserterItems: parsedFilters.length > 0 ? parsedFilters : undefined,
+      isFiltered: isFiltered || undefined,
       accentColor,
+      preservedRawEntity,
     };
   });
 
@@ -368,6 +510,15 @@ export function parseBlueprintToEntities(
     for (const e of converted) {
       e.tileX -= minX;
       e.tileY -= maxY;
+      if (e.preservedRawEntity) {
+        const pos = e.preservedRawEntity.position as { x: number; y: number } | undefined;
+        if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+          e.preservedRawEntity.position = {
+            x: pos.x - minX,
+            y: pos.y - maxY,
+          };
+        }
+      }
     }
   }
 

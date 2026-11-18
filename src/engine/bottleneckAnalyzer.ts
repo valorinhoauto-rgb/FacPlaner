@@ -23,8 +23,8 @@ export function analyzeBottlenecks(
 ): BottleneckAlert[] {
   const alerts: BottleneckAlert[] = [];
   const defaultBelt =
-    index.beltsById.get(config.defaultBeltId ?? 'express-transport-belt') ??
-    index.pack.belts[index.pack.belts.length - 1];
+    index.beltsById.get(config.defaultBeltId ?? 'transport-belt') ??
+    index.pack.belts[0];
   const defaultInserter =
     index.insertersById.get(config.defaultInserterId ?? 'fast-inserter') ??
     index.pack.inserters[0];
