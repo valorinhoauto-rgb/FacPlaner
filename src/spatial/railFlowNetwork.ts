@@ -156,11 +156,64 @@ function resolveAllRailSegments(entities: GridEntity[]): ResolvedSeg[] {
   );
   if (trackEntities.length === 0) return [];
 
-  const resolved: ResolvedSeg[] = trackEntities.map((ent) => {
-    const cx = ent.tileX + (ent.bpOffsetX ?? 0) + ent.width / 2;
-    const cy = ent.tileY + (ent.bpOffsetY ?? 0) + ent.height / 2;
+  const hasLegacyCurvedRail = trackEntities.some(
+    (e) =>
+      e.name.includes('curved-rail') &&
+      !e.name.includes('curved-rail-a') &&
+      !e.name.includes('curved-rail-b')
+  );
+
+  // Index diagonal straight-rails by rounded center so Factorio 1.1 staircases
+  // (two half-corners separated orthogonally by (±2, 0) or (0, ±2) with opposite dirs on the same slope)
+  // stay on 1.1 geometry while Factorio 2.0 single-piece diagonals use centered 2.828-tile geometry.
+  const diagStraightIndex = new Map<string, number[]>();
+  const getCenter = (ent: GridEntity) => ({
+    cx: ent.tileX + (ent.bpOffsetX ?? 0) + ent.width / 2,
+    cy: ent.tileY + (ent.bpOffsetY ?? 0) + ent.height / 2,
+  });
+  for (const ent of trackEntities) {
+    if (!ent.name.includes('straight-rail')) continue;
     const rawDir = ent.rawDirection ?? ent.direction ?? 0;
-    const spec = getRailCurveSpec(ent.name, rawDir);
+    const d16 = (((Math.round(rawDir) % 16) + 16) % 16) & ~1;
+    if (d16 !== 2 && d16 !== 6 && d16 !== 10 && d16 !== 14) continue;
+    const { cx, cy } = getCenter(ent);
+    const key = `${Math.round(cx)}:${Math.round(cy)}`;
+    const list = diagStraightIndex.get(key) ?? [];
+    list.push(d16);
+    diagStraightIndex.set(key, list);
+  }
+
+  const isHalfCornerDiagonal = (ent: GridEntity): boolean => {
+    if (!ent.name.includes('straight-rail')) return false;
+    const rawDir = ent.rawDirection ?? ent.direction ?? 0;
+    const d16 = (((Math.round(rawDir) % 16) + 16) % 16) & ~1;
+    if (d16 !== 2 && d16 !== 6 && d16 !== 10 && d16 !== 14) return false;
+    if (hasLegacyCurvedRail) return true;
+
+    const { cx, cy } = getCenter(ent);
+    const rx = Math.round(cx);
+    const ry = Math.round(cy);
+    const oppDir = (d16 + 8) % 16;
+    for (const [ox, oy] of [
+      [2, 0],
+      [-2, 0],
+      [0, 2],
+      [0, -2],
+    ]) {
+      const dirs = diagStraightIndex.get(`${rx + ox}:${ry + oy}`);
+      if (dirs && dirs.includes(oppDir)) return true;
+    }
+    return false;
+  };
+
+  const resolved: ResolvedSeg[] = trackEntities.map((ent) => {
+    const { cx, cy } = getCenter(ent);
+    const rawDir = ent.rawDirection ?? ent.direction ?? 0;
+    const spec = getRailCurveSpec(
+      ent.name,
+      rawDir,
+      isHalfCornerDiagonal(ent) ? 'f11' : 'f2'
+    );
     const { p0, p1, t0, t1 } = getSpecEndpointsAndTangents(cx, cy, spec);
     const isAnchor =
       ent.name.includes('straight-rail') || ent.name.includes('rail-ramp');

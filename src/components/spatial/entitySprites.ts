@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { WikiSpriteImage } from '../../assets/wikiEntitySprites.ts';
 import type { GridEntity } from '../../spatial/types.ts';
 
 export type InserterRole = 'input' | 'output' | 'transfer';
@@ -99,7 +100,7 @@ function drawChamferedRect(
 
 export function drawChamferedWikiSprite(
   ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
+  img: WikiSpriteImage,
   x: number,
   y: number,
   w: number,
@@ -109,6 +110,10 @@ export function drawChamferedWikiSprite(
   lineWidth = 1.4,
   cropFrac = 0.09
 ) {
+  const imgW = img instanceof HTMLImageElement ? img.naturalWidth : img.width;
+  const imgH = img instanceof HTMLImageElement ? img.naturalHeight : img.height;
+  if (imgW <= 0 || imgH <= 0) return;
+
   const minDim = Math.min(w, h);
   const pad = Math.max(1, zoom * 0.045);
   const rx = x + pad;
@@ -120,10 +125,10 @@ export function drawChamferedWikiSprite(
   drawChamferedRect(ctx, rx, ry, rw, rh, minDim * 0.1);
   ctx.clip();
 
-  const sx = img.naturalWidth * cropFrac;
-  const sy = img.naturalHeight * cropFrac;
-  const sw = Math.max(1, img.naturalWidth * (1 - cropFrac * 2));
-  const sh = Math.max(1, img.naturalHeight * (1 - cropFrac * 2));
+  const sx = imgW * cropFrac;
+  const sy = imgH * cropFrac;
+  const sw = Math.max(1, imgW * (1 - cropFrac * 2));
+  const sh = Math.max(1, imgH * (1 - cropFrac * 2));
   ctx.drawImage(img, sx, sy, sw, sh, rx, ry, rw, rh);
   ctx.restore();
 
@@ -185,7 +190,8 @@ export function drawTransportBeltSprite(
   zoom: number,
   tSec: number,
   beltColor: string,
-  getLaneItemInfo: (itemId: string) => { color: string; img?: HTMLImageElement }
+  getLaneItemInfo: (itemId: string) => { color: string; img?: HTMLImageElement },
+  wikiSprite?: WikiSpriteImage
 ) {
   const cx = x + w / 2;
   const cy = y + h / 2;
@@ -206,46 +212,97 @@ export function drawTransportBeltSprite(
 
   const half = zoom * 0.46;
   const railW = Math.max(1.4, zoom * 0.11);
+  const imgW = wikiSprite
+    ? wikiSprite instanceof HTMLImageElement
+      ? wikiSprite.naturalWidth
+      : wikiSprite.width
+    : 0;
+  const imgH = wikiSprite
+    ? wikiSprite instanceof HTMLImageElement
+      ? wikiSprite.naturalHeight
+      : wikiSprite.height
+    : 0;
+  const hasWiki = Boolean(wikiSprite && imgW > 0 && imgH > 0);
 
-  // Dark rubber belt bed
-  ctx.fillStyle = '#181D26';
-  ctx.fillRect(-half, -half, half * 2, half * 2);
+  if (hasWiki && wikiSprite) {
+    // Official Factorio Wiki Underground_belt_entity.png crops (source flows South +Y; rotate PI -> local -Y forward)
+    const crop =
+      ent.kind === 'underground-belt'
+        ? ent.undergroundType === 'output'
+          ? { sx: 0.428, sy: 0.672, sw: 0.144, sh: 0.144 }
+          : { sx: 0.428, sy: 0.172, sw: 0.144, sh: 0.144 }
+        : { sx: 0.431, sy: 0.015, sw: 0.138, sh: 0.138 };
 
-  // Side metal guide rails
-  ctx.fillStyle = '#333C4D';
-  ctx.fillRect(-half, -half, railW, half * 2);
-  ctx.fillRect(half - railW, -half, railW, half * 2);
+    const tilePad = zoom * 0.49;
+    ctx.save();
+    ctx.rotate(Math.PI);
+    ctx.beginPath();
+    ctx.rect(-tilePad, -tilePad, tilePad * 2, tilePad * 2);
+    ctx.clip();
+    ctx.drawImage(
+      wikiSprite,
+      imgW * crop.sx,
+      imgH * crop.sy,
+      imgW * crop.sw,
+      imgH * crop.sh,
+      -tilePad,
+      -tilePad,
+      tilePad * 2,
+      tilePad * 2
+    );
+    ctx.restore();
 
-  // Tier color trim strips along inner rails
-  ctx.fillStyle = beltColor;
-  ctx.fillRect(-half + railW, -half, Math.max(0.9, zoom * 0.045), half * 2);
-  ctx.fillRect(half - railW - Math.max(0.9, zoom * 0.045), -half, Math.max(0.9, zoom * 0.045), half * 2);
-
-  // Static ribbed belt slats + directional chevron
-  if (zoom >= 8) {
-    const slatCount = 3;
-    const spacing = (half * 2) / slatCount;
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)';
-    ctx.lineWidth = Math.max(1, zoom * 0.045);
-    for (let i = 1; i < slatCount; i++) {
-      const sy = -half + i * spacing;
-      ctx.beginPath();
-      ctx.moveTo(-half + railW + 1, sy);
-      ctx.lineTo(half - railW - 1, sy);
-      ctx.stroke();
+    if (ent.kind === 'underground-belt') {
+      ctx.strokeStyle = beltColor;
+      ctx.lineWidth = Math.max(1.1, zoom * 0.06);
+      ctx.strokeRect(-tilePad + 0.5, -tilePad + 0.5, tilePad * 2 - 1, tilePad * 2 - 1);
     }
-  }
+  } else {
+    // Dark rubber belt bed
+    ctx.fillStyle = '#181D26';
+    ctx.fillRect(-half, -half, half * 2, half * 2);
 
-  // Crisp static directional chevron pointing forward (-Y in local space)
-  ctx.strokeStyle = beltColor;
-  ctx.lineWidth = Math.max(1.4, zoom * 0.095);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(-zoom * 0.19, zoom * 0.12);
-  ctx.lineTo(0, -zoom * 0.1);
-  ctx.lineTo(zoom * 0.19, zoom * 0.12);
-  ctx.stroke();
+    // Side metal guide rails
+    ctx.fillStyle = '#333C4D';
+    ctx.fillRect(-half, -half, railW, half * 2);
+    ctx.fillRect(half - railW, -half, railW, half * 2);
+
+    // Tier color trim strips along inner rails
+    ctx.fillStyle = beltColor;
+    ctx.fillRect(-half + railW, -half, Math.max(0.9, zoom * 0.045), half * 2);
+    ctx.fillRect(
+      half - railW - Math.max(0.9, zoom * 0.045),
+      -half,
+      Math.max(0.9, zoom * 0.045),
+      half * 2
+    );
+
+    // Static ribbed belt slats + directional chevron
+    if (zoom >= 8) {
+      const slatCount = 3;
+      const spacing = (half * 2) / slatCount;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)';
+      ctx.lineWidth = Math.max(1, zoom * 0.045);
+      for (let i = 1; i < slatCount; i++) {
+        const sy = -half + i * spacing;
+        ctx.beginPath();
+        ctx.moveTo(-half + railW + 1, sy);
+        ctx.lineTo(half - railW - 1, sy);
+        ctx.stroke();
+      }
+    }
+
+    // Crisp static directional chevron pointing forward (-Y in local space)
+    ctx.strokeStyle = beltColor;
+    ctx.lineWidth = Math.max(1.4, zoom * 0.095);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-zoom * 0.19, zoom * 0.12);
+    ctx.lineTo(0, -zoom * 0.1);
+    ctx.lineTo(zoom * 0.19, zoom * 0.12);
+    ctx.stroke();
+  }
 
   // Static dual-lane carried items
   if (ent.beltLanes && zoom >= 11) {
@@ -278,8 +335,8 @@ export function drawTransportBeltSprite(
   void tSec;
   void speed;
 
-  // Underground Belt steel hood portal (blocks exit/entry half distinctly)
-  if (ent.kind === 'underground-belt') {
+  // Underground Belt steel hood portal vector fallback when Wiki sprite is still loading
+  if (!hasWiki && ent.kind === 'underground-belt') {
     const isInput = ent.undergroundType !== 'output';
     // Input dives underground toward front (-Y); Output emerges from underground at back (+Y)
     const hoodY = isInput ? -half : 0;
@@ -326,7 +383,8 @@ export function drawSplitterSprite(
   h: number,
   zoom: number,
   tSec: number,
-  beltColor: string
+  beltColor: string,
+  wikiSprite?: WikiSpriteImage
 ) {
   const cx = x + w / 2;
   const cy = y + h / 2;
@@ -337,6 +395,41 @@ export function drawSplitterSprite(
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(angle);
+
+  const imgW = wikiSprite
+    ? wikiSprite instanceof HTMLImageElement
+      ? wikiSprite.naturalWidth
+      : wikiSprite.width
+    : 0;
+  const imgH = wikiSprite
+    ? wikiSprite instanceof HTMLImageElement
+      ? wikiSprite.naturalHeight
+      : wikiSprite.height
+    : 0;
+
+  if (wikiSprite && imgW > 0 && imgH > 0) {
+    // Official Factorio Wiki Splitter_entity_anim.gif frame-0 static crop (source flows South +Y; rotate PI -> local -Y forward)
+    const sx = imgW * 0.383;
+    const sy = imgH * 0.415;
+    const sw = imgW * 0.277;
+    const sh = imgH * 0.142;
+
+    ctx.save();
+    ctx.rotate(Math.PI);
+    drawChamferedRect(ctx, -zoom * 0.98, -zoom * 0.5, zoom * 1.96, zoom * 1.0, zoom * 0.1);
+    ctx.clip();
+    ctx.drawImage(wikiSprite, sx, sy, sw, sh, -zoom * 0.98, -zoom * 0.5, zoom * 1.96, zoom * 1.0);
+    ctx.restore();
+
+    drawChamferedRect(ctx, -zoom * 0.98, -zoom * 0.5, zoom * 1.96, zoom * 1.0, zoom * 0.1);
+    ctx.strokeStyle = beltColor;
+    ctx.lineWidth = Math.max(1.1, zoom * 0.06);
+    ctx.stroke();
+
+    ctx.restore();
+    void tSec;
+    return;
+  }
 
   // Two parallel belt beds running underneath (-Y is forward)
   for (const laneX of [-zoom * 0.5, zoom * 0.5]) {

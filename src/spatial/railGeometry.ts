@@ -27,7 +27,11 @@ export type RailCurveSpec =
  * Returns local track centerline geometry in tile units relative to the
  * rail entity's exact blueprint center `(0, 0)` for Factorio 2.0 16-way rails.
  */
-export function getRailCurveSpec(name: string, rawDir: number): RailCurveSpec {
+export function getRailCurveSpec(
+  name: string,
+  rawDir: number,
+  variant: 'f2' | 'f11' = 'f2'
+): RailCurveSpec {
   const d = ((Math.round(rawDir) % 16) + 16) % 16;
 
   if (name.includes('rail-ramp')) {
@@ -122,30 +126,34 @@ export function getRailCurveSpec(name: string, rawDir: number): RailCurveSpec {
   }
 
   // straight-rail / elevated-straight-rail (2x2)
-  // Factorio's diagonal direction points toward the empty interior normal,
-  // OPPOSITE the occupied corner of the 2x2 tile:
-  //   NE dir (2 / 1.1=1):  occupies SW corner -> (0,1) to (-1,0) ("\" slope)
-  //   SE dir (6 / 1.1=3):  occupies NW corner -> (-1,0) to (0,-1) ("/" slope)
-  //   SW dir (10 / 1.1=5): occupies NE corner -> (0,-1) to (1,0) ("\" slope)
-  //   NW dir (14 / 1.1=7): occupies SE corner -> (1,0) to (0,1) ("/" slope)
   const dir16 = (d & ~1) % 16;
-  switch (dir16) {
-    case 0:
-    case 8:
-      return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 0, y: 1 }, tieCount: 3 };
-    case 4:
-    case 12:
-      return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 1, y: 0 }, tieCount: 3 };
-    case 2: // NE (1.1 dir 1): SW corner (0,1) -> (-1,0) ("\" slope)
-      return { kind: 'line', p0: { x: 0, y: 1 }, p1: { x: -1, y: 0 }, tieCount: 2 };
-    case 6: // SE (1.1 dir 3): NW corner (-1,0) -> (0,-1) ("/" slope)
-      return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 0, y: -1 }, tieCount: 2 };
-    case 10: // SW (1.1 dir 5): NE corner (0,-1) -> (1,0) ("\" slope)
-      return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 1, y: 0 }, tieCount: 2 };
-    case 14: // NW (1.1 dir 7): SE corner (1,0) -> (0,1) ("/" slope)
-    default:
-      return { kind: 'line', p0: { x: 1, y: 0 }, p1: { x: 0, y: 1 }, tieCount: 2 };
+  if (dir16 === 0 || dir16 === 8) {
+    return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 0, y: 1 }, tieCount: 3 };
   }
+  if (dir16 === 4 || dir16 === 12) {
+    return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 1, y: 0 }, tieCount: 3 };
+  }
+
+  if (variant === 'f11') {
+    // Factorio 1.1 half-corner diagonal staircase pieces (1.414 tiles each)
+    switch (dir16) {
+      case 2: // NE (1.1 dir 1): SW corner (0,1) -> (-1,0) ("\" slope)
+        return { kind: 'line', p0: { x: 0, y: 1 }, p1: { x: -1, y: 0 }, tieCount: 2 };
+      case 6: // SE (1.1 dir 3): NW corner (-1,0) -> (0,-1) ("/" slope)
+        return { kind: 'line', p0: { x: -1, y: 0 }, p1: { x: 0, y: -1 }, tieCount: 2 };
+      case 10: // SW (1.1 dir 5): NE corner (0,-1) -> (1,0) ("\" slope)
+        return { kind: 'line', p0: { x: 0, y: -1 }, p1: { x: 1, y: 0 }, tieCount: 2 };
+      case 14: // NW (1.1 dir 7): SE corner (1,0) -> (0,1) ("/" slope)
+      default:
+        return { kind: 'line', p0: { x: 1, y: 0 }, p1: { x: 0, y: 1 }, tieCount: 2 };
+    }
+  }
+
+  // Factorio 2.0 centered full-diagonal straight-rail (2.828 tiles across 2x2 cell)
+  if (dir16 === 2 || dir16 === 10) {
+    return { kind: 'line', p0: { x: -1, y: -1 }, p1: { x: 1, y: 1 }, tieCount: 4 };
+  }
+  return { kind: 'line', p0: { x: -1, y: 1 }, p1: { x: 1, y: -1 }, tieCount: 4 };
 }
 
 export function evalRailPointAndNormal(

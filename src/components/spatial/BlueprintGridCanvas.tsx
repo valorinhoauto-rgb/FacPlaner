@@ -20,11 +20,8 @@ import {
   Move,
   RefreshCw,
   RotateCw,
-  Route,
   Share2,
   TrainFront,
-  Trash2,
-  Undo2,
   X,
   ZoomIn,
   ZoomOut,
@@ -37,7 +34,6 @@ import type {
   GridEntity,
   GridEntityKind,
   LayoutSynthesisOptions,
-  ManualFlowPath,
   SynthesizedLayout,
   TrainStationConfig,
 } from '../../spatial/types.ts';
@@ -53,13 +49,11 @@ import {
   buildRailFlowNetwork,
   computeTrainCarPosesOnNetwork,
   detectTrainStopsOnNetwork,
+  sampleChainAtArcLength,
   snapStationToRail,
+  type RailFlowNetwork,
 } from '../../spatial/railFlowNetwork.ts';
-import {
-  evalRailPointAndNormal,
-  getRailCurveSpec,
-  isRailTrackEntityName,
-} from '../../spatial/railGeometry.ts';
+import { isRailTrackEntityName } from '../../spatial/railGeometry.ts';
 import { traceMachineProcess } from '../../spatial/processTracer.ts';
 import { computeTrainWagonPlan, type TrainRawInputEntry } from '../../spatial/trainPlanner.ts';
 import {
@@ -85,7 +79,6 @@ type EditorTool =
   | 'pan'
   | 'move-production'
   | 'place-train-station'
-  | 'draw-flow'
   | 'place-belt'
   | 'place-underground'
   | 'place-splitter'
@@ -140,67 +133,85 @@ function getInserterColor(name: string): string {
   return '#EAB308';
 }
 
-interface ExactRailDrawItem {
-  ent: GridEntity;
-  drawTileX: number;
-  drawTileY: number;
-}
-
 /**
- * Draws every imported & synthesized rail entity 1:1 from its exact Factorio blueprint
- * position and 16-way direction geometry, without guessing or altering rail curves.
+ * Renders the auto-interpreted, topologically welded RailFlowNetwork as smooth,
+ * unbroken ballast beds, perpendicular sleepers, twin mitered steel rails, and
+ * crisp static yellow directional flow chevrons (zero chopped sprite gaps).
  */
-function drawExactGridRails(
+function drawInterpretedRailFlowNetwork(
   ctx: CanvasRenderingContext2D,
-  rails: ExactRailDrawItem[],
+  network: RailFlowNetwork,
   pan: { x: number; y: number },
-  zoom: number
+  zoom: number,
+  startTileX: number,
+  endTileX: number,
+  startTileY: number,
+  endTileY: number
 ) {
-  if (rails.length === 0) return;
+  if (network.chains.length === 0) return;
 
-  const prepared = rails.map(({ ent, drawTileX, drawTileY }) => ({
-    cx: drawTileX + ent.width / 2,
-    cy: drawTileY + ent.height / 2,
-    spec: getRailCurveSpec(ent.name, ent.rawDirection ?? ent.direction),
-    isRamp: ent.name.includes('rail-ramp'),
-  }));
+  const visibleChains = network.chains.filter((chain) => {
+    if (chain.points.length < 2) return false;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const p of chain.points) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return !(
+      maxX < startTileX - 2 ||
+      minX > endTileX + 2 ||
+      maxY < startTileY - 2 ||
+      minY > endTileY + 2
+    );
+  });
+
+  if (visibleChains.length === 0) return;
 
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // 1. Flat ballast track bed
+  // Pass A: Continuous flat ballast track bed across all chains
   ctx.strokeStyle = '#181C24';
   ctx.lineWidth = Math.max(3, zoom * 1.46);
-  for (const { cx, cy, spec } of prepared) {
+  for (const chain of visibleChains) {
+    const pts = chain.points;
     ctx.beginPath();
-    ctx.moveTo(pan.x + (cx + spec.p0.x) * zoom, pan.y + (cy + spec.p0.y) * zoom);
-    if (spec.kind === 'line') {
-      ctx.lineTo(pan.x + (cx + spec.p1.x) * zoom, pan.y + (cy + spec.p1.y) * zoom);
-    } else {
-      ctx.quadraticCurveTo(
-        pan.x + (cx + spec.p1.x) * zoom,
-        pan.y + (cy + spec.p1.y) * zoom,
-        pan.x + (cx + spec.p2.x) * zoom,
-        pan.y + (cy + spec.p2.y) * zoom
-      );
+    ctx.moveTo(pan.x + pts[0].x * zoom, pan.y + pts[0].y * zoom);
+    const limit = chain.closed ? pts.length - 1 : pts.length;
+    for (let i = 1; i < limit; i++) {
+      ctx.lineTo(pan.x + pts[i].x * zoom, pan.y + pts[i].y * zoom);
     }
+    if (chain.closed) ctx.closePath();
     ctx.stroke();
   }
 
-  // 2. Wooden sleepers perpendicular to the exact piece tangent
+  // Pass B: Wooden sleepers at uniform arc-length intervals perpendicular to tangent
   if (zoom >= 3.0) {
     const tieHalf = zoom * 0.62;
     ctx.strokeStyle = '#574232';
     ctx.lineWidth = Math.max(1.1, zoom * 0.15);
     ctx.lineCap = 'butt';
-    for (const { cx, cy, spec } of prepared) {
-      const count = Math.max(1, spec.tieCount);
+    for (const chain of visibleChains) {
+      const count = Math.max(1, Math.round(chain.totalLength));
+      const stepLen = chain.totalLength / count;
       for (let i = 0; i < count; i++) {
-        const t = (i + 0.5) / count;
-        const pt = evalRailPointAndNormal(spec, t);
-        const px = pan.x + (cx + pt.x) * zoom;
-        const py = pan.y + (cy + pt.y) * zoom;
+        const pt = sampleChainAtArcLength(chain, (i + 0.5) * stepLen);
+        if (
+          pt.x < startTileX - 1 ||
+          pt.x > endTileX + 1 ||
+          pt.y < startTileY - 1 ||
+          pt.y > endTileY + 1
+        ) {
+          continue;
+        }
+        const px = pan.x + pt.x * zoom;
+        const py = pan.y + pt.y * zoom;
         ctx.beginPath();
         ctx.moveTo(px + pt.nx * tieHalf, py + pt.ny * tieHalf);
         ctx.lineTo(px - pt.nx * tieHalf, py - pt.ny * tieHalf);
@@ -209,151 +220,124 @@ function drawExactGridRails(
     }
   }
 
-  // 3. Twin parallel steel rails offset along exact local normal
+  // Pass C: Continuous twin parallel steel rails using averaged interior vertex normals
+  const normalize2 = (dx: number, dy: number) => {
+    const len = Math.hypot(dx, dy);
+    return len > 1e-6 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 };
+  };
+
   ctx.strokeStyle = '#CBD5E1';
   ctx.lineWidth = Math.max(1, zoom * 0.12);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  for (const { cx, cy, spec, isRamp } of prepared) {
-    const steps = spec.kind === 'line' ? (isRamp ? 4 : 2) : 10;
+  const railGaugeHalf = 0.42;
+
+  for (const chain of visibleChains) {
+    const rawPts = chain.points;
+    const pts =
+      chain.closed && rawPts.length >= 3 ? rawPts.slice(0, rawPts.length - 1) : rawPts;
+    const n = pts.length;
+    if (n < 2) continue;
+
+    const offsets = new Array<{ x: number; y: number }>(n);
+    for (let i = 0; i < n; i++) {
+      const prev = i > 0 ? pts[i - 1] : chain.closed ? pts[n - 1] : null;
+      const next = i < n - 1 ? pts[i + 1] : chain.closed ? pts[0] : null;
+
+      if (prev && next) {
+        const tPrev = normalize2(pts[i].x - prev.x, pts[i].y - prev.y);
+        const tNext = normalize2(next.x - pts[i].x, next.y - pts[i].y);
+        const nPrev = { x: -tPrev.y, y: tPrev.x };
+        const nNext = { x: -tNext.y, y: tNext.x };
+        const sumX = nPrev.x + nNext.x;
+        const sumY = nPrev.y + nNext.y;
+        const sumLen = Math.hypot(sumX, sumY);
+        if (sumLen > 1e-4) {
+          const avgNx = sumX / sumLen;
+          const avgNy = sumY / sumLen;
+          const cosHalf = Math.max(0.65, avgNx * nPrev.x + avgNy * nPrev.y);
+          const scale = railGaugeHalf / cosHalf;
+          offsets[i] = { x: avgNx * scale, y: avgNy * scale };
+        } else {
+          offsets[i] = { x: nPrev.x * railGaugeHalf, y: nPrev.y * railGaugeHalf };
+        }
+      } else if (next) {
+        const t = normalize2(next.x - pts[i].x, next.y - pts[i].y);
+        offsets[i] = { x: -t.y * railGaugeHalf, y: t.x * railGaugeHalf };
+      } else if (prev) {
+        const t = normalize2(pts[i].x - prev.x, pts[i].y - prev.y);
+        offsets[i] = { x: -t.y * railGaugeHalf, y: t.x * railGaugeHalf };
+      } else {
+        offsets[i] = { x: 0, y: 0 };
+      }
+    }
+
     for (const side of [-1, 1]) {
       ctx.beginPath();
-      for (let i = 0; i <= steps; i++) {
-        const pt = evalRailPointAndNormal(spec, i / steps);
-        const rx = pan.x + (cx + pt.x + pt.nx * (0.42 * side)) * zoom;
-        const ry = pan.y + (cy + pt.y + pt.ny * (0.42 * side)) * zoom;
+      for (let i = 0; i < n; i++) {
+        const rx = pan.x + (pts[i].x + offsets[i].x * side) * zoom;
+        const ry = pan.y + (pts[i].y + offsets[i].y * side) * zoom;
         if (i === 0) ctx.moveTo(rx, ry);
         else ctx.lineTo(rx, ry);
       }
+      if (chain.closed) ctx.closePath();
       ctx.stroke();
     }
   }
 
-  ctx.restore();
-}
+  // Pass D: Static yellow directional flow chevrons from inferred signals & stops
+  const pitch = zoom < 6 ? 12 : zoom < 14 ? 8 : 6;
+  const arrowSz = Math.max(4.5, Math.min(11, zoom * 0.4));
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
 
-function drawManualFlowPaths(
-  ctx: CanvasRenderingContext2D,
-  paths: ManualFlowPath[],
-  draftPoints: Array<{ x: number; y: number }>,
-  hoverExact: { x: number; y: number } | null,
-  pan: { x: number; y: number },
-  zoom: number
-) {
-  const renderPolyline = (
-    points: Array<{ x: number; y: number }>,
-    strokeColor: string,
-    arrowColor: string,
-    isDraft: boolean
-  ) => {
-    if (points.length < 2) return;
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+  for (const chain of visibleChains) {
+    const flow = network.chainFlows[chain.id] ?? 0;
+    if (flow === 0 || chain.totalLength < 1.2) continue;
 
-    // Contrast backdrop
-    ctx.strokeStyle = 'rgba(11, 14, 20, 0.85)';
-    ctx.lineWidth = Math.max(4, zoom * 0.24);
-    ctx.beginPath();
-    points.forEach((p, idx) => {
-      const sx = pan.x + p.x * zoom;
-      const sy = pan.y + p.y * zoom;
-      if (idx === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    });
-    ctx.stroke();
+    const arrowCount = Math.max(1, Math.floor(chain.totalLength / pitch));
+    const step = chain.totalLength / arrowCount;
 
-    // Foreground vector line
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = Math.max(2, zoom * 0.12);
-    if (isDraft) ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    points.forEach((p, idx) => {
-      const sx = pan.x + p.x * zoom;
-      const sy = pan.y + p.y * zoom;
-      if (idx === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    });
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // Static directional arrowheads along segments
-    const arrowPitch = zoom < 6 ? 12 : 7;
-    const arrowSz = Math.max(5, Math.min(12, zoom * 0.44));
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = points[i];
-      const b = points[i + 1];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const segLen = Math.hypot(dx, dy);
-      if (segLen < 0.8) continue;
-      const angle = Math.atan2(dy, dx);
-      const count = Math.max(1, Math.floor(segLen / arrowPitch));
-      for (let k = 0; k < count; k++) {
-        const frac = (k + 0.5) / count;
-        const px = pan.x + (a.x + dx * frac) * zoom;
-        const py = pan.y + (a.y + dy * frac) * zoom;
-
-        ctx.save();
-        ctx.translate(px, py);
-        ctx.rotate(angle);
-        ctx.strokeStyle = 'rgba(11, 14, 20, 0.9)';
-        ctx.lineWidth = Math.max(3, arrowSz * 0.42);
-        ctx.beginPath();
-        ctx.moveTo(-arrowSz * 0.48, -arrowSz * 0.5);
-        ctx.lineTo(arrowSz * 0.46, 0);
-        ctx.lineTo(-arrowSz * 0.48, arrowSz * 0.5);
-        ctx.stroke();
-
-        ctx.strokeStyle = arrowColor;
-        ctx.lineWidth = Math.max(1.8, arrowSz * 0.24);
-        ctx.beginPath();
-        ctx.moveTo(-arrowSz * 0.48, -arrowSz * 0.5);
-        ctx.lineTo(arrowSz * 0.46, 0);
-        ctx.lineTo(-arrowSz * 0.48, arrowSz * 0.5);
-        ctx.stroke();
-        ctx.restore();
+    for (let k = 0; k < arrowCount; k++) {
+      const pt = sampleChainAtArcLength(chain, (k + 0.5) * step);
+      if (
+        pt.x < startTileX - 1 ||
+        pt.x > endTileX + 1 ||
+        pt.y < startTileY - 1 ||
+        pt.y > endTileY + 1
+      ) {
+        continue;
       }
-    }
 
-    // Waypoint handles on draft path
-    if (isDraft) {
-      ctx.fillStyle = arrowColor;
-      for (const p of points) {
-        ctx.beginPath();
-        ctx.arc(pan.x + p.x * zoom, pan.y + p.y * zoom, Math.max(3.5, zoom * 0.16), 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    ctx.restore();
-  };
+      const angle = Math.atan2(pt.ty * flow, pt.tx * flow);
+      const px = pan.x + pt.x * zoom;
+      const py = pan.y + pt.y * zoom;
 
-  for (const path of paths) {
-    renderPolyline(path.points, 'rgba(34, 211, 238, 0.85)', '#FACC15', false);
-  }
-
-  if (draftPoints.length > 0) {
-    const snappedHover = hoverExact
-      ? { x: Math.round(hoverExact.x * 2) / 2, y: Math.round(hoverExact.y * 2) / 2 }
-      : null;
-    const previewPts = snappedHover ? [...draftPoints, snappedHover] : draftPoints;
-    if (previewPts.length === 1) {
       ctx.save();
-      ctx.fillStyle = '#F59E0B';
+      ctx.translate(px, py);
+      ctx.rotate(angle);
+
+      ctx.strokeStyle = 'rgba(11, 14, 20, 0.92)';
+      ctx.lineWidth = Math.max(3, arrowSz * 0.42);
       ctx.beginPath();
-      ctx.arc(
-        pan.x + previewPts[0].x * zoom,
-        pan.y + previewPts[0].y * zoom,
-        Math.max(4, zoom * 0.18),
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
+      ctx.moveTo(-arrowSz * 0.45, -arrowSz * 0.48);
+      ctx.lineTo(arrowSz * 0.45, 0);
+      ctx.lineTo(-arrowSz * 0.45, arrowSz * 0.48);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#FACC15';
+      ctx.lineWidth = Math.max(1.7, arrowSz * 0.24);
+      ctx.beginPath();
+      ctx.moveTo(-arrowSz * 0.45, -arrowSz * 0.48);
+      ctx.lineTo(arrowSz * 0.45, 0);
+      ctx.lineTo(-arrowSz * 0.45, arrowSz * 0.48);
+      ctx.stroke();
+
       ctx.restore();
-    } else {
-      renderPolyline(previewPts, '#F59E0B', '#FDE68A', true);
     }
   }
+
+  ctx.restore();
 }
 
 export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
@@ -387,8 +371,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   const [selectedEntityNum, setSelectedEntityNum] = useState<number | null>(null);
   const [isolateMachineProcess, setIsolateMachineProcess] = useState(true);
   const [hoverTile, setHoverTile] = useState<{ x: number; y: number } | null>(null);
-  const [hoverExactTile, setHoverExactTile] = useState<{ x: number; y: number } | null>(null);
-  const [draftFlowPoints, setDraftFlowPoints] = useState<Array<{ x: number; y: number }>>([]);
   const [spriteTick, setSpriteTick] = useState(0);
   const [containerSizeTick, setContainerSizeTick] = useState(0);
   const [moveProdPreviewDelta, setMoveProdPreviewDelta] = useState<{ dx: number; dy: number } | null>(
@@ -578,24 +560,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     setSelectedEntityNum(null);
   }, [selectedEntity, entities, onChangeEntities]);
 
-  const handleFinishManualFlow = useCallback(
-    (pointsOverride?: Array<{ x: number; y: number }>) => {
-      const pts = pointsOverride ?? draftFlowPoints;
-      if (pts.length >= 2 && onChangeLayoutOptions) {
-        const nextPath: ManualFlowPath = {
-          id: `flow-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          points: pts,
-        };
-        onChangeLayoutOptions({
-          manualFlowPaths: [...(layoutOptions?.manualFlowPaths ?? []), nextPath],
-        });
-      }
-      setDraftFlowPoints([]);
-    },
-    [draftFlowPoints, onChangeLayoutOptions, layoutOptions?.manualFlowPaths]
-  );
-
-  // Keyboard shortcuts (R = Rotate, Del/Backspace = Delete, F = Fit, Enter/Esc = Manual Flow)
+  // Keyboard shortcuts (R = Rotate, Del/Backspace = Delete, F = Fit)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (
@@ -612,23 +577,11 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         handleDeleteSelected();
       } else if (e.key === 'f' || e.key === 'F') {
         fitToView();
-      } else if (e.key === 'Enter' && tool === 'draw-flow' && draftFlowPoints.length >= 2) {
-        e.preventDefault();
-        handleFinishManualFlow();
-      } else if (e.key === 'Escape' && draftFlowPoints.length > 0) {
-        setDraftFlowPoints([]);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [
-    handleRotateSelectedOrPreview,
-    handleDeleteSelected,
-    fitToView,
-    tool,
-    draftFlowPoints.length,
-    handleFinishManualFlow,
-  ]);
+  }, [handleRotateSelectedOrPreview, handleDeleteSelected, fitToView]);
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const exactTile = screenToExactTile(e.clientX, e.clientY);
@@ -642,24 +595,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         startPanX: pan.x,
         startPanY: pan.y,
       };
-      return;
-    }
-
-    if (tool === 'draw-flow') {
-      if (e.button === 2) {
-        return;
-      }
-      const snappedPt = {
-        x: Math.round(exactTile.x * 2) / 2,
-        y: Math.round(exactTile.y * 2) / 2,
-      };
-      setDraftFlowPoints((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && Math.hypot(snappedPt.x - last.x, snappedPt.y - last.y) < 0.4) {
-          return prev;
-        }
-        return [...prev, snappedPt];
-      });
       return;
     }
 
@@ -854,7 +789,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     const exact = screenToExactTile(e.clientX, e.clientY);
     const tile = { x: Math.floor(exact.x), y: Math.floor(exact.y) };
     setHoverTile(tile);
-    setHoverExactTile(exact);
 
     const ds = dragStateRef.current;
     if (ds.mode === 'pan') {
@@ -1054,7 +988,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
       }
 
       const groundObstacles: DrawItem[] = [];
-      const railDrawItems: ExactRailDrawItem[] = [];
       const productionItems: DrawItem[] = [];
       const signalAndStopItems: DrawItem[] = [];
       let selectedDrawItem: DrawItem | null = null;
@@ -1090,7 +1023,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           if (ent.name.includes('rail-signal') || ent.name.includes('train-stop')) {
             signalAndStopItems.push(item);
           } else if (isRailTrackEntityName(ent.name) || ent.name.includes('rail-ramp')) {
-            railDrawItems.push({ ent, drawTileX, drawTileY });
+            // Rendered continuously in Pass 3 from interpreted RailFlowNetwork
           } else {
             groundObstacles.push(item);
           }
@@ -1146,16 +1079,30 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
 
         if (ent.kind === 'transport-belt' || ent.kind === 'underground-belt') {
           const beltColor = getBeltColor(ent.name);
-          drawTransportBeltSprite(ctx, ent, x, y, w, h, zoom, tSec, beltColor, (itemId) => {
-            const res = index.resourcesById.get(itemId);
-            return {
-              color: res?.color ?? '#E2E8F0',
-              img: zoom >= 14 ? spritePackStore.resolveImage(itemId, res?.iconPath) : undefined,
-            };
-          });
+          const wikiBeltImg = wikiEntitySprites.resolveImage(ent.name);
+          drawTransportBeltSprite(
+            ctx,
+            ent,
+            x,
+            y,
+            w,
+            h,
+            zoom,
+            tSec,
+            beltColor,
+            (itemId) => {
+              const res = index.resourcesById.get(itemId);
+              return {
+                color: res?.color ?? '#E2E8F0',
+                img: zoom >= 14 ? spritePackStore.resolveImage(itemId, res?.iconPath) : undefined,
+              };
+            },
+            wikiBeltImg
+          );
         } else if (ent.kind === 'splitter') {
           const beltColor = getBeltColor(ent.name);
-          drawSplitterSprite(ctx, ent, x, y, w, h, zoom, tSec, beltColor);
+          const wikiSplitterImg = wikiEntitySprites.resolveImage(ent.name);
+          drawSplitterSprite(ctx, ent, x, y, w, h, zoom, tSec, beltColor, wikiSplitterImg);
         } else if (ent.kind === 'pipe' || ent.kind === 'pipe-to-ground') {
           const fluidColor = ent.fluidId
             ? index.resourcesById.get(ent.fluidId)?.color ?? '#06B6D4'
@@ -1410,17 +1357,18 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
         ctx.restore();
       }
 
-      // Pass 3: Exact 1:1 Imported & Generated Rail Tracks + Manual User Flow Overlay
+      // Pass 3: Continuous Welded Rail Network & Interpreted Directional Flow Chevrons
       ctx.save();
       if (machineProcessTrace) ctx.globalAlpha = 0.25;
-      drawExactGridRails(ctx, railDrawItems, pan, zoom);
-      drawManualFlowPaths(
+      drawInterpretedRailFlowNetwork(
         ctx,
-        layoutOptions?.manualFlowPaths ?? [],
-        draftFlowPoints,
-        hoverExactTile,
+        railFlowNetwork,
         pan,
-        zoom
+        zoom,
+        startTileX,
+        endTileX,
+        startTileY,
+        endTileY
       );
 
       // Pass 4: Rail Signals, Chain Signals & Fixed Train Stops on top of the rail flow
@@ -1933,18 +1881,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               true
             );
           }
-        } else if (tool === 'draw-flow') {
-          if (hoverExactTile) {
-            const sx = pan.x + (Math.round(hoverExactTile.x * 2) / 2) * zoom;
-            const sy = pan.y + (Math.round(hoverExactTile.y * 2) / 2) * zoom;
-            ctx.save();
-            ctx.strokeStyle = '#F59E0B';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(sx, sy, Math.max(4, zoom * 0.2), 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-          }
         } else if (tool.startsWith('place-')) {
           const isSplitter = tool === 'place-splitter';
           const isBeacon = tool === 'place-beacon';
@@ -1978,10 +1914,8 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
   }, [
     canPlaceAt,
     containerSizeTick,
-    draftFlowPoints,
     entities,
     factoryCenter,
-    hoverExactTile,
     hoverTile,
     machineProcessTrace,
     index.beaconsById,
@@ -1993,7 +1927,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
     layout.gridFitReport,
     layout.ports,
     layout.zones,
-    layoutOptions?.manualFlowPaths,
     moveProdPreviewDelta,
     pan,
     placeDirection,
@@ -2092,9 +2025,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
             ...(onChangeTrainStation
               ? [{ id: 'place-train-station', label: t.canvas.tools.trainEntrance, icon: TrainFront }]
               : []),
-            ...(onChangeLayoutOptions
-              ? [{ id: 'draw-flow', label: t.canvas.tools.drawFlow, icon: Route }]
-              : []),
             { id: 'place-belt', label: t.canvas.tools.belt },
             { id: 'place-underground', label: t.canvas.tools.underground },
             { id: 'place-splitter', label: t.canvas.tools.splitter },
@@ -2111,12 +2041,7 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => {
-                  if (item.id !== 'draw-flow' && draftFlowPoints.length > 0) {
-                    setDraftFlowPoints([]);
-                  }
-                  setTool(item.id as EditorTool);
-                }}
+                onClick={() => setTool(item.id as EditorTool)}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
                   active
                     ? 'bg-amber-500 text-slate-950 font-semibold shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]'
@@ -2341,25 +2266,9 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onDoubleClick={() => {
-            if (tool === 'draw-flow' && draftFlowPoints.length >= 2) {
-              handleFinishManualFlow();
-            }
-          }}
-          onContextMenu={(e) => {
-            if (tool === 'draw-flow') {
-              e.preventDefault();
-              if (draftFlowPoints.length >= 2) {
-                handleFinishManualFlow();
-              } else {
-                setDraftFlowPoints([]);
-              }
-            }
-          }}
           onMouseLeave={() => {
             handleMouseUp();
             setHoverTile(null);
-            setHoverExactTile(null);
           }}
           onWheel={handleWheel}
           className={`w-full h-full block ${
@@ -2520,63 +2429,6 @@ export const BlueprintGridCanvas: React.FC<BlueprintGridCanvasProps> = ({
                   <Crosshair className="w-3 h-3" />
                   {t.canvas.centerProduction}
                 </button>
-              </div>
-            </div>
-          )}
-
-        {/* Floating Manual Rail Flow Drawing HUD */}
-        {(tool === 'draw-flow' || (layoutOptions?.manualFlowPaths?.length ?? 0) > 0) &&
-          onChangeLayoutOptions && (
-            <div className="absolute bottom-3 left-3 flex flex-col gap-2 p-2.5 bg-[#141920]/95 border border-cyan-500/45 rounded-md shadow-xl text-xs max-w-xs">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-semibold text-cyan-300 flex items-center gap-1.5">
-                  <Route className="w-3.5 h-3.5" />
-                  {t.canvas.manualFlowTitle}
-                </span>
-                <span className="font-mono text-[11px] text-slate-400">
-                  {t.canvas.manualFlowCount(layoutOptions?.manualFlowPaths?.length ?? 0)}
-                </span>
-              </div>
-              {tool === 'draw-flow' && (
-                <div className="text-[11px] text-slate-400 leading-snug">
-                  {t.canvas.manualFlowHint}
-                </div>
-              )}
-              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                {draftFlowPoints.length >= 2 && (
-                  <button
-                    type="button"
-                    onClick={() => handleFinishManualFlow()}
-                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold bg-amber-500 text-slate-950 rounded hover:bg-amber-400"
-                  >
-                    <Check className="w-3 h-3" />
-                    {t.canvas.manualFlowFinish}
-                  </button>
-                )}
-                {draftFlowPoints.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setDraftFlowPoints((prev) => prev.slice(0, -1))}
-                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1D222B] border border-[#32363E] text-slate-200 rounded hover:border-amber-500/60"
-                  >
-                    <Undo2 className="w-3 h-3" />
-                    {t.canvas.manualFlowUndoPoint}
-                  </button>
-                )}
-                {(layoutOptions?.manualFlowPaths?.length ?? 0) > 0 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onChangeLayoutOptions({
-                        manualFlowPaths: (layoutOptions?.manualFlowPaths ?? []).slice(0, -1),
-                      })
-                    }
-                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1D222B] border border-[#32363E] text-red-300 rounded hover:border-red-500/60"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    {t.canvas.manualFlowDeleteLast}
-                  </button>
-                )}
               </div>
             </div>
           )}

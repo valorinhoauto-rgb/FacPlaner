@@ -725,7 +725,7 @@ function synthesizeFactoryLayoutCore(
   config: PlanConfig,
   modeOrOptions: 'compact' | 'standard' | LayoutSynthesisOptions = 'compact'
 ): SynthesizedLayout {
-  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame' | 'trainStation' | 'layoutRotation' | 'manualFlowPaths'>> & {
+  const options: Required<Omit<LayoutSynthesisOptions, 'gridFrame' | 'trainStation' | 'layoutRotation'>> & {
     gridFrame?: GridEntity[];
     trainStation?: TrainStationConfig;
   } =

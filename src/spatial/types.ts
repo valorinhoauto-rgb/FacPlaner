@@ -63,11 +63,6 @@ export interface GridEntity {
   preservedRawEntity?: Record<string, unknown>;
 }
 
-export interface ManualFlowPath {
-  id: string;
-  points: Array<{ x: number; y: number }>;
-}
-
 export interface StageZone {
   stageId: string;
   recipeId: string;
@@ -140,8 +135,6 @@ export interface LayoutSynthesisOptions {
   productionOffsetY?: number;
   /** Rigid rotation (0/4/8/12) applied to synthesized production blueprint */
   layoutRotation?: Direction;
-  /** User-drawn directional rail flow paths overlaid on the imported grid */
-  manualFlowPaths?: ManualFlowPath[];
   /** Optional external grid blueprint entities (rails, roboports, substations, walls, etc.) to fit production inside */
   gridFrame?: GridEntity[];
   /** Optional Train Station / Cargo Wagon config to route unloading belts directly up to the wagon fronts */

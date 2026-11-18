@@ -1437,6 +1437,18 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
     expect(getWikiEntitySpriteUrl('steel-chest')).toBe(
       'https://wiki.factorio.com/images/Steel_chest_entity.png'
     );
+    expect(getWikiEntitySpriteUrl('transport-belt')).toBe(
+      'https://wiki.factorio.com/images/Underground_belt_entity.png'
+    );
+    expect(getWikiEntitySpriteUrl('fast-underground-belt')).toBe(
+      'https://wiki.factorio.com/images/Fast_underground_belt_entity.png'
+    );
+    expect(getWikiEntitySpriteUrl('express-splitter')).toBe(
+      'https://wiki.factorio.com/images/Express_splitter_entity_anim.gif'
+    );
+    expect(getWikiEntitySpriteUrl('turbo-transport-belt')).toBe(
+      'https://wiki.factorio.com/images/Turbo_underground_belt_entity.png'
+    );
   });
 
   it('defaults new blank projects to the starter 15/s transport-belt tier', async () => {
@@ -1566,6 +1578,47 @@ describe('Fase 4 — Spatial 2D Assembly Line Synthesizer & Blueprint Codec', ()
         }
       }
     }
+  });
+
+  it('welds Factorio 2.0 centered diagonal straight-rails cleanly with curved-rail-b into one unbroken chain', async () => {
+    const { buildRailFlowNetwork, sampleChainAtArcLength } = await import('../railFlowNetwork.ts');
+
+    const bpJson = {
+      blueprint: {
+        item: 'blueprint',
+        label: 'Factorio 2.0 Diagonal Corner',
+        version: 562949956632576,
+        entities: [
+          { entity_number: 1, name: 'straight-rail', position: { x: 0, y: 14 }, direction: 4 },
+          { entity_number: 2, name: 'curved-rail-a', position: { x: 3, y: 14 }, direction: 4 },
+          { entity_number: 3, name: 'curved-rail-b', position: { x: 8, y: 12 }, direction: 11 },
+          { entity_number: 4, name: 'straight-rail', position: { x: 11, y: 9 }, direction: 6 },
+          { entity_number: 5, name: 'straight-rail', position: { x: 13, y: 7 }, direction: 6 },
+          { entity_number: 6, name: 'curved-rail-b', position: { x: 16, y: 4 }, direction: 9 },
+          { entity_number: 7, name: 'curved-rail-a', position: { x: 18, y: -1 }, direction: 2 },
+          { entity_number: 8, name: 'straight-rail', position: { x: 18, y: -4 }, direction: 0 },
+          { entity_number: 9, name: 'rail-signal', position: { x: 0, y: 15.5 }, direction: 12 },
+        ],
+      },
+    };
+    const zlib = await import('pako');
+    const compressed = zlib.deflate(new TextEncoder().encode(JSON.stringify(bpJson)));
+    let bin = '';
+    for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+    const bpStr = '0' + btoa(bin);
+
+    const parsed = parseBlueprintToEntities(bpStr, index);
+    const net = buildRailFlowNetwork(parsed.entities);
+
+    // Must weld all 8 segments (including both Factorio 2.0 diagonals) into ONE unbroken chain
+    expect(net.chains.length).toBe(1);
+    expect(net.chains[0].totalLength).toBeGreaterThan(26);
+    expect(net.chainFlows[0]).not.toBe(0);
+
+    // Signal at (0, 15.5) dir 12 propagates Eastbound (+X) & Northbound (-Y) through diagonal
+    const midSample = sampleChainAtArcLength(net.chains[0], net.chains[0].totalLength / 2);
+    expect(midSample.tx * net.chainFlows[0]).toBeGreaterThan(0.5);
+    expect(midSample.ty * net.chainFlows[0]).toBeLessThan(-0.5);
   });
 });
 

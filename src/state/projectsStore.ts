@@ -6,7 +6,7 @@
 import type { Direction } from '../data/schema.ts';
 import { DEFAULT_PACK_ID } from '../data/packRegistry.ts';
 import type { PlanConfig, RateUnit } from '../engine/types.ts';
-import type { GridEntity, InputAlignmentSide, ManualFlowPath, TrainStationConfig } from '../spatial/types.ts';
+import type { GridEntity, InputAlignmentSide, TrainStationConfig } from '../spatial/types.ts';
 
 export interface FactoryProject {
   id: string;
@@ -23,7 +23,6 @@ export interface FactoryProject {
     productionOffsetX?: number;
     productionOffsetY?: number;
     layoutRotation?: Direction;
-    manualFlowPaths?: ManualFlowPath[];
   };
   /** Optional Train Entrance & Cargo Wagon slot configuration */
   trainStation?: TrainStationConfig;

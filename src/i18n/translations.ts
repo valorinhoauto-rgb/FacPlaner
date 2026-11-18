@@ -247,7 +247,6 @@ export interface Translations {
       pan: string;
       moveProduction: string;
       trainEntrance: string;
-      drawFlow: string;
       belt: string;
       underground: string;
       splitter: string;
@@ -334,13 +333,6 @@ export interface Translations {
     trainPlannerBtn: string;
     rotateFactoryBtn: string;
     rotateFactoryTooltip: string;
-    manualFlowTitle: string;
-    manualFlowHint: string;
-    manualFlowFinish: string;
-    manualFlowUndoPoint: string;
-    manualFlowDeleteLast: string;
-    manualFlowClearAll: string;
-    manualFlowCount: (count: number) => string;
     trainModal: {
       title: string;
       subtitle: string;
@@ -864,7 +856,6 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         pan: 'Mover Mapa',
         moveProduction: 'Mover Produção',
         trainEntrance: 'Entrada Trem',
-        drawFlow: 'Desenhar Fluxo',
         belt: 'Esteira',
         underground: 'Subterrânea',
         splitter: 'Divisor',
@@ -957,13 +948,6 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       trainPlannerBtn: 'Vagões & Trem',
       rotateFactoryBtn: 'Girar BP',
       rotateFactoryTooltip: 'Rotacionar toda a blueprint de produção em 90° (0°/90°/180°/270°) para alinhar as entradas aos trilhos/grid',
-      manualFlowTitle: 'Fluxo Manual nos Trilhos',
-      manualFlowHint: 'Clique nos trilhos para traçar o caminho do fluxo. Botão direito ou duplo-clique finaliza a linha.',
-      manualFlowFinish: 'Concluir linha',
-      manualFlowUndoPoint: 'Desfazer ponto',
-      manualFlowDeleteLast: 'Apagar última linha',
-      manualFlowClearAll: 'Limpar todas',
-      manualFlowCount: (count) => `${count} linha(s) desenhada(s)`,
       trainModal: {
         title: 'Estação de Trem & Cálculo de Slots por Vagão',
         subtitle:
@@ -1656,7 +1640,6 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
         pan: 'Pan Map',
         moveProduction: 'Move Factory',
         trainEntrance: 'Train Entrance',
-        drawFlow: 'Draw Flow',
         belt: 'Belt',
         underground: 'Underground',
         splitter: 'Splitter',
@@ -1748,13 +1731,6 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
       trainPlannerBtn: 'Train & Wagons',
       rotateFactoryBtn: 'Rotate BP',
       rotateFactoryTooltip: 'Rotate the entire production blueprint by 90° (0°/90°/180°/270°) to align inputs with rails/grid edges',
-      manualFlowTitle: 'Manual Rail Flow',
-      manualFlowHint: 'Click along tracks to draw flow arrows. Right-click or double-click to finish line.',
-      manualFlowFinish: 'Finish line',
-      manualFlowUndoPoint: 'Undo point',
-      manualFlowDeleteLast: 'Delete last line',
-      manualFlowClearAll: 'Clear all',
-      manualFlowCount: (count) => `${count} path(s) drawn`,
       trainModal: {
         title: 'Train Entrance & Cargo Wagon Slot Calculator',
         subtitle:
